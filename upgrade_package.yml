@@ -2,6 +2,7 @@
   tasks:
     - name: Update Packages
       become: true
+      become_user: jie
       apt:
         upgrade: yes
         update_cache: yes
