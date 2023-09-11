@@ -1,8 +1,16 @@
-- hosts: all
+---
+- name: Upgrade apt packages and restart server
+  hosts: all
+  become: true
+  serial: 1
+
   tasks:
     - name: Upgrade Apt Packages
-      become: true
       apt:
         upgrade: yes
         update_cache: yes
-        
+
+    - name: Reboot
+      reboot:
+        connect_timeout: 5
+        reboot_timeout: 300
