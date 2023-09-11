@@ -1,6 +1,6 @@
 - hosts: all
   tasks:
-    - name: apt update
+    - name: Upgrade Apt Packages
       become: true
       apt:
         upgrade: yes
