@@ -1,9 +1,10 @@
 - hosts: all
+  become: true
   tasks:
-    - name: Update Packages
-      become: true
-      become_user: jie
-      apt:
-        upgrade: yes
-        update_cache: yes
-        
+    - name: apt update
+      shell:
+        cmd: apt update
+
+    - name: apt upgrade
+      shell:
+        cmd: apt upgrade -y
