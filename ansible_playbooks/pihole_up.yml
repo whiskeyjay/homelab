@@ -5,10 +5,5 @@
   serial: 1
 
   tasks:
-    - name: Upgrade Pihole
-      apt:
-        upgrade: yes
-        update_cache: yes
-
     - name: Run pihole -up command
       shell: pihole -up
