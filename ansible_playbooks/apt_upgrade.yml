@@ -7,5 +7,7 @@
   tasks:
     - name: Upgrade Apt Packages
       apt:
+        update_cache: true
         upgrade: yes
-        update_cache: yes
+        autoremove: true
+        autoclean: true
