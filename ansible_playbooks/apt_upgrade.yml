@@ -5,9 +5,14 @@
   serial: 1
 
   tasks:
-    - name: Upgrade Apt Packages
+    - name: apt update
       apt:
         update_cache: true
+
+    - name: apt upgrade
+      apt:
         upgrade: yes
+
+    - name: apt autoremove
+      apt:
         autoremove: true
-        autoclean: true
