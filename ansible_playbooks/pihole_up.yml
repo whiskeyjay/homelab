@@ -1,5 +1,5 @@
 ---
-- name: Upgrade Pihole
+- name: Update Pihole
   hosts: all
   become: true
   serial: 1
