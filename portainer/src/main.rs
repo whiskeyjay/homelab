@@ -295,6 +295,7 @@ fn process_container(
         for (interface, net_stats) in networks {
             let net_point = DataPoint::builder("docker_container_network")
                 .tag("endpoint_id", endpoint.id.to_string())
+                .tag("endpoint_name", endpoint.name.to_string())
                 .tag("container_id", container.id.to_string())
                 .tag("container_name", container_name.to_string())
                 .tag("interface", interface.clone())
@@ -325,6 +326,7 @@ fn process_container(
         let field_name = format!("blkio_{}_bytes", op);
         let blkio_point = DataPoint::builder("docker_container_blkio")
             .tag("endpoint_id", endpoint.id.to_string())
+            .tag("endpoint_name", endpoint.name.to_string())
             .tag("container_id", container.id.to_string())
             .tag("container_name", container_name.to_string())
             .tag("device", device)
