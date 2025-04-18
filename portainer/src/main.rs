@@ -320,27 +320,29 @@ fn process_container(
     }
 
     // Block I/O Metrics
-    for blkio_stat in stats.blkio_stats.io_service_bytes_recursive {
-        let device = format!("{}:{}", blkio_stat.major, blkio_stat.minor);
-        let op = blkio_stat.op.to_lowercase();
-        let field_name = format!("blkio_{}_bytes", op);
-        let blkio_point = DataPoint::builder("docker_container_blkio")
-            .tag("endpoint_id", endpoint.id.to_string())
-            .tag("endpoint_name", endpoint.name.to_string())
-            .tag("container_id", container.id.to_string())
-            .tag("container_name", container_name.to_string())
-            .tag("device", device)
-            .tag("operation", op)
-            .field(&field_name, blkio_stat.value as i64)
-            .build()
-            .context("Failed to build blkio data point")?;
+    if let Some(io_service_bytes_recursive) = stats.blkio_stats.io_service_bytes_recursive {
+        for blkio_stat in io_service_bytes_recursive {
+            let device = format!("{}:{}", blkio_stat.major, blkio_stat.minor);
+            let op = blkio_stat.op.to_lowercase();
+            let field_name = format!("blkio_{}_bytes", op);
+            let blkio_point = DataPoint::builder("docker_container_blkio")
+                .tag("endpoint_id", endpoint.id.to_string())
+                .tag("endpoint_name", endpoint.name.to_string())
+                .tag("container_id", container.id.to_string())
+                .tag("container_name", container_name.to_string())
+                .tag("device", device)
+                .tag("operation", op)
+                .field(&field_name, blkio_stat.value as i64)
+                .build()
+                .context("Failed to build blkio data point")?;
 
-        runtime
-            .block_on(influx_client.write(
-                &config.influxdb_bucket,
-                futures_util::stream::iter(vec![blkio_point]),
-            ))
-            .context("Failed to write blkio stats to InfluxDB")?;
+            runtime
+                .block_on(influx_client.write(
+                    &config.influxdb_bucket,
+                    futures_util::stream::iter(vec![blkio_point]),
+                ))
+                .context("Failed to write blkio stats to InfluxDB")?;
+        }
     }
 
     // Process Metrics

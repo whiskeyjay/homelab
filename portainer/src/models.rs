@@ -22,6 +22,7 @@ pub(crate) struct Container {
 pub(crate) struct CpuStats {
     pub(crate) cpu_usage: CpuUsage,
     pub(crate) system_cpu_usage: Option<u64>,
+    #[serde(default)]
     pub(crate) online_cpus: u64,
     #[serde(rename = "throttling_data")]
     pub(crate) throttling_data: ThrottlingData,
@@ -29,8 +30,11 @@ pub(crate) struct CpuStats {
 
 #[derive(Deserialize)]
 pub(crate) struct CpuUsage {
+    #[serde(default)]
     pub(crate) total_usage: u64,
+    #[serde(default)]
     pub(crate) usage_in_kernelmode: u64,
+    #[serde(default)]
     pub(crate) usage_in_usermode: u64,
     #[allow(dead_code)]
     pub(crate) percpu_usage: Option<Vec<u64>>,
@@ -38,14 +42,19 @@ pub(crate) struct CpuUsage {
 
 #[derive(Deserialize)]
 pub(crate) struct ThrottlingData {
+    #[serde(default)]
     pub(crate) periods: u64,
+    #[serde(default)]
     pub(crate) throttled_periods: u64,
+    #[serde(default)]
     pub(crate) throttled_time: u64,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct MemoryStats {
+    #[serde(default)]
     pub(crate) usage: u64,
+    #[serde(default)]
     pub(crate) limit: u64,
     pub(crate) stats: MemoryStatsDetails,
 }
@@ -119,33 +128,45 @@ pub(crate) struct MemoryStatsDetails {
 
 #[derive(Deserialize)]
 pub(crate) struct NetworkStats {
+    #[serde(default)]
     pub(crate) rx_bytes: u64,
+    #[serde(default)]
     pub(crate) rx_packets: u64,
+    #[serde(default)]
     pub(crate) rx_errors: u64,
+    #[serde(default)]
     pub(crate) rx_dropped: u64,
+    #[serde(default)]
     pub(crate) tx_bytes: u64,
+    #[serde(default)]
     pub(crate) tx_packets: u64,
+    #[serde(default)]
     pub(crate) tx_errors: u64,
+    #[serde(default)]
     pub(crate) tx_dropped: u64,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct BlkioStats {
     #[serde(default)]
-    pub(crate) io_service_bytes_recursive: Vec<BlkioStat>,
+    pub(crate) io_service_bytes_recursive: Option<Vec<BlkioStat>>,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct BlkioStat {
+    #[serde(default)]
     pub(crate) major: u64,
+    #[serde(default)]
     pub(crate) minor: u64,
+    #[serde(default)]
     pub(crate) op: String,
+    #[serde(default)]
     pub(crate) value: u64,
 }
 
 #[derive(Deserialize)]
 pub(crate) struct Stats {
-    #[allow(dead_code)]
+    #[serde(default)]
     pub(crate) read: String,
     pub(crate) cpu_stats: CpuStats,
     pub(crate) precpu_stats: CpuStats,
