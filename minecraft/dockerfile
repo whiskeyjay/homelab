@@ -1,0 +1,15 @@
+FROM amazoncorretto:21
+
+EXPOSE 25565/tcp
+WORKDIR /minecraft
+
+# Install udev, and wget
+RUN yum install -y udev wget && yum clean all
+
+# Download the Minecraft server jar
+RUN wget -O server.jar https://piston-data.mojang.com/v1/objects/e6ec2f64e6080b9b5d9b471b291c33cc7f509733/server.jar
+
+# Accept the EULA
+RUN echo "eula=true" > eula.txt
+
+ENTRYPOINT cd $MC_SVR_PATH && cp /minecraft/*.* $MC_SVR_PATH && java -Xmx$MC_MEM_MAX -Xms$MC_MEM_MIN -jar ./server.jar --nogui
