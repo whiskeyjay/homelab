@@ -3,3 +3,9 @@
 # -Clink-args=/DYNAMICBASE /CETCOMPAT: Enable "shadow stack" (https://docs.microsoft.com/en-us/cpp/build/reference/cetcompat)
 [target.'cfg(target_os = "windows")']
 rustflags = ["-Ccontrol-flow-guard", "-Ctarget-feature=+crt-static", "-Clink-args=/DYNAMICBASE /CETCOMPAT", "-D", "warnings"]
+
+[target.x86_64-unknown-linux-musl]
+linker = "musl-gcc"
+
+[target.aarch64-unknown-linux-musl]
+linker = "aarch64-linux-gnu-gcc"

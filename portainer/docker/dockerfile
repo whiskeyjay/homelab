@@ -1,0 +1,23 @@
+# Use Alpine for minimal size with utilities
+FROM alpine:latest
+
+ARG TARGETPLATFORM
+
+# Copy the application binary
+COPY ./bin/${TARGETPLATFORM}/ptn2influx /app/ptn2influx
+
+# Create a non-root user and group
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+
+# Copy an entrypoint script to handle secrets
+COPY ./entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
+
+# Ensure the app directory is owned by the non-root user
+RUN chown -R appuser:appgroup /app
+
+# Set non-root user
+USER appuser
+
+# Use the entrypoint script
+ENTRYPOINT ["/app/entrypoint.sh"]
