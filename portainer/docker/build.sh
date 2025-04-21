@@ -5,7 +5,6 @@
 # Script directory
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
-
 cargo clean
 cargo build --release --target x86_64-unknown-linux-musl
 cargo build --release --target aarch64-unknown-linux-musl
@@ -31,7 +30,7 @@ cd "$BUILD_DIR"
 
 docker buildx build \
     -t whiskeyjay/ptn2influx:latest \
-    -t whiskeyjay/ptn2influx:0.1.0 \
+    -t whiskeyjay/ptn2influx:0.1.1 \
     -t whiskeyjay/ptn2influx:0.1 \
     --platform linux/amd64,linux/arm64 \
     --push \

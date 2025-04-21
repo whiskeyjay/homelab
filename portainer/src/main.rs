@@ -1,20 +1,21 @@
+mod influxdb_writer;
 mod models;
 
 use crate::models::*;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use influxdb2::Client as InfluxClient;
-use influxdb2::models::DataPoint;
+use crossbeam::channel::Sender;
+use influxdb_writer::InfluxDBWriter;
 use log::{error, info};
 use log4rs::{
     append::console::{ConsoleAppender, Target},
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
+use rayon::prelude::*;
 use reqwest::blocking::Client as HttpClient;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{env, fs, thread};
-use tokio::runtime::Runtime;
 
 struct AppConfig {
     portainer_url: String,
@@ -24,6 +25,51 @@ struct AppConfig {
     influxdb_org: String,
     influxdb_bucket: String,
     poll_interval: Duration,
+}
+
+fn main() -> Result<()> {
+    let config = load_config()?;
+
+    // Initialize logging
+    init_logging().context("Failed to initialize logging")?;
+
+    info!("Starting Portainer metrics to InfluxDB exporter...");
+
+    // Initialize clients
+    let http_client = HttpClient::new();
+
+    let data_sender = create_influxdb_writer(
+        &config.influxdb_url,
+        &config.influxdb_org,
+        &config.influxdb_bucket,
+        &config.influxdb_token,
+    )?;
+
+    loop {
+        info!(
+            "Fetching endpoints from Portainer endpoint \"{}\"...",
+            config.portainer_url
+        );
+
+        let last_poll = Instant::now();
+        let endpoints = get_endpoints(&http_client, &config).context("Failed to get endpoints")?;
+
+        info!("Found {} endpoints.", endpoints.len());
+
+        endpoints.par_iter().for_each(|endpoint| {
+            if let Err(e) = process_endpoint(&http_client, &data_sender, &config, endpoint) {
+                error!("Error processing endpoint {}: {:?}", endpoint.id, e);
+            }
+        });
+
+        match config.poll_interval.checked_sub(last_poll.elapsed()) {
+            Some(sleep_time) => {
+                info!("Waiting {} seconds for next poll...", sleep_time.as_secs());
+                thread::sleep(sleep_time);
+            }
+            None => {}
+        }
+    }
 }
 
 fn load_config() -> Result<AppConfig> {
@@ -91,39 +137,16 @@ fn init_logging() -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let config = load_config()?;
+fn create_influxdb_writer(
+    influxdb_url: &str,
+    influxdb_org: &str,
+    influxdb_bucket: &str,
+    influxdb_token: &str,
+) -> Result<Sender<String>> {
+    let writer = InfluxDBWriter::new(influxdb_url, influxdb_org, influxdb_bucket, influxdb_token);
+    writer.run()?;
 
-    // Initialize logging
-    init_logging().context("Failed to initialize logging")?;
-
-    // Initialize clients
-    let http_client = HttpClient::new();
-    let influx_client = InfluxClient::new(
-        &config.influxdb_url,
-        &config.influxdb_org,
-        &config.influxdb_token,
-    );
-
-    info!("Starting Portainer metrics to InfluxDB exporter...");
-
-    loop {
-        info!(
-            "Fetching endpoints from Portainer endpoint \"{}\"...",
-            config.portainer_url
-        );
-
-        let endpoints = get_endpoints(&http_client, &config).context("Failed to get endpoints")?;
-
-        info!("Found {} endpoints.", endpoints.len());
-
-        for endpoint in &endpoints {
-            if let Err(e) = process_endpoint(&http_client, &influx_client, &config, endpoint) {
-                eprintln!("Error processing endpoint {}: {:?}", endpoint.id, e);
-            }
-        }
-        thread::sleep(config.poll_interval);
-    }
+    Ok(writer.get_sender())
 }
 
 fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<Endpoint>> {
@@ -141,7 +164,7 @@ fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<Endpoint
 
 fn process_endpoint(
     http_client: &HttpClient,
-    influx_client: &InfluxClient,
+    data_sender: &Sender<String>,
     config: &AppConfig,
     endpoint: &Endpoint,
 ) -> Result<()> {
@@ -155,7 +178,7 @@ fn process_endpoint(
         endpoint.name
     );
 
-    for container in &containers {
+    containers.par_iter().for_each(|container| {
         let container_name = container
             .names
             .get(0)
@@ -164,7 +187,7 @@ fn process_endpoint(
 
         if let Err(e) = process_container(
             http_client,
-            influx_client,
+            data_sender,
             config,
             endpoint,
             container,
@@ -175,7 +198,8 @@ fn process_endpoint(
                 container_name, endpoint.name, e
             );
         }
-    }
+    });
+
     Ok(())
 }
 
@@ -200,7 +224,7 @@ fn get_containers(
 
 fn process_container(
     http_client: &HttpClient,
-    influx_client: &InfluxClient,
+    data_sender: &Sender<String>,
     config: &AppConfig,
     endpoint: &Endpoint,
     container: &Container,
@@ -212,47 +236,31 @@ fn process_container(
     );
 
     let stats = get_container_stats(http_client, config, endpoint.id, container.id.as_str())?;
-    let timestamp: DateTime<Utc> = stats.read.parse().context("Failed to parse timestamp")?;
-    let mut builder = DataPoint::builder("docker_container_stats")
-        .timestamp(
-            timestamp
-                .timestamp_nanos_opt()
-                .context("Failed to convert timestamp to nanoseconds")?,
-        )
-        .tag("endpoint_id", endpoint.id.to_string())
-        .tag("endpoint_name", endpoint.name.to_string())
-        .tag("container_id", container.id.to_string())
-        .tag("container_name", container_name.to_string());
+    let mut main_stats = String::new();
+
+    // Set tags
+    main_stats.push_str(&format!(
+        "docker_container_stats,endpoint_id={},endpoint_name={},container_id={},container_name={}",
+        endpoint.id,
+        endpoint.name.replace(" ", "\\ "),
+        container.id.replace(" ", "\\ "),
+        container_name.replace(" ", "\\ ")
+    ));
 
     // CPU Metrics
     let cpu_percent = calculate_cpu_percent(&stats);
-    builder = builder
-        .field("cpu_percent", cpu_percent)
-        .field(
-            "cpu_total_usage",
-            stats.cpu_stats.cpu_usage.total_usage as i64,
-        )
-        .field(
-            "cpu_kernelmode_usage",
-            stats.cpu_stats.cpu_usage.usage_in_kernelmode as i64,
-        )
-        .field(
-            "cpu_usermode_usage",
-            stats.cpu_stats.cpu_usage.usage_in_usermode as i64,
-        )
-        .field("cpu_online_cpus", stats.cpu_stats.online_cpus as i64)
-        .field(
-            "cpu_throttle_periods",
-            stats.cpu_stats.throttling_data.periods as i64,
-        )
-        .field(
-            "cpu_throttled_periods",
-            stats.cpu_stats.throttling_data.throttled_periods as i64,
-        )
-        .field(
-            "cpu_throttled_time",
-            stats.cpu_stats.throttling_data.throttled_time as i64,
-        );
+
+    main_stats.push_str(&format!(
+        " cpu_percent={},cpu_total_usage={}i,cpu_kernelmode_usage={}i,cpu_usermode_usage={}i,cpu_online_cpus={}i,cpu_throttle_periods={}i,cpu_throttled_periods={}i,cpu_throttled_time={}i",
+        cpu_percent,
+        stats.cpu_stats.cpu_usage.total_usage as i64,
+        stats.cpu_stats.cpu_usage.usage_in_kernelmode as i64,
+        stats.cpu_stats.cpu_usage.usage_in_usermode as i64,
+        stats.cpu_stats.online_cpus as i64,
+        stats.cpu_stats.throttling_data.periods as i64,
+        stats.cpu_stats.throttling_data.throttled_periods as i64,
+        stats.cpu_stats.throttling_data.throttled_time as i64
+    ));
 
     // Memory Metrics
     let memory_usage_mb = stats.memory_stats.usage as f64 / 1024.0 / 1024.0;
@@ -263,59 +271,64 @@ fn process_container(
         0.0
     };
 
-    builder = builder
-        .field("memory_usage_mb", memory_usage_mb)
-        .field("memory_limit_mb", memory_limit_mb)
-        .field("memory_percent", memory_percent)
-        .field(
-            "memory_active_anon_mb",
-            stats.memory_stats.stats.active_anon as f64 / 1024.0 / 1024.0,
-        )
-        .field(
-            "memory_active_file_mb",
-            stats.memory_stats.stats.active_file as f64 / 1024.0 / 1024.0,
-        )
-        .field(
-            "memory_inactive_anon_mb",
-            stats.memory_stats.stats.inactive_anon as f64 / 1024.0 / 1024.0,
-        )
-        .field(
-            "memory_inactive_file_mb",
-            stats.memory_stats.stats.inactive_file as f64 / 1024.0 / 1024.0,
-        )
-        .field(
-            "memory_file_mapped_mb",
-            stats.memory_stats.stats.file_mapped as f64 / 1024.0 / 1024.0,
-        );
+    main_stats.push_str(&format!(
+        ",memory_usage_mb={},memory_limit_mb={},memory_percent={},memory_active_anon_mb={},memory_active_file_mb={},memory_inactive_anon_mb={},memory_inactive_file_mb={},memory_file_mapped_mb={}",
+        memory_usage_mb,
+        memory_limit_mb,
+        memory_percent,
+        stats.memory_stats.stats.active_anon as f64 / 1024.0 / 1024.0,
+        stats.memory_stats.stats.active_file as f64 / 1024.0 / 1024.0,
+        stats.memory_stats.stats.inactive_anon as f64 / 1024.0 / 1024.0,
+        stats.memory_stats.stats.inactive_file as f64 / 1024.0 / 1024.0,
+        stats.memory_stats.stats.file_mapped as f64 / 1024.0 / 1024.0
+    ));
 
-    let runtime = Runtime::new().context("Failed to create runtime")?;
+    // Process Metrics
+    if let Some(pids_current) = stats.pids_stats.get("current") {
+        main_stats.push_str(&format!(",pids_current={}i ", *pids_current as i64));
+    }
+
+    // Timestamp
+    let timestamp: DateTime<Utc> = stats.read.parse().unwrap_or(Utc::now());
+
+    main_stats.push_str(&format!(
+        " {}",
+        timestamp
+            .timestamp_nanos_opt()
+            .context("Failed to convert timestamp to nanoseconds")?
+    ));
+
+    // Write main stats
+    data_sender
+        .send(main_stats)
+        .context("Failed to send main data point to the InfluxDB writer")?;
 
     // Network Metrics (per interface)
     if let Some(networks) = stats.networks {
         for (interface, net_stats) in networks {
-            let net_point = DataPoint::builder("docker_container_network")
-                .tag("endpoint_id", endpoint.id.to_string())
-                .tag("endpoint_name", endpoint.name.to_string())
-                .tag("container_id", container.id.to_string())
-                .tag("container_name", container_name.to_string())
-                .tag("interface", interface.clone())
-                .field("rx_bytes", net_stats.rx_bytes as i64)
-                .field("rx_packets", net_stats.rx_packets as i64)
-                .field("rx_errors", net_stats.rx_errors as i64)
-                .field("rx_dropped", net_stats.rx_dropped as i64)
-                .field("tx_bytes", net_stats.tx_bytes as i64)
-                .field("tx_packets", net_stats.tx_packets as i64)
-                .field("tx_errors", net_stats.tx_errors as i64)
-                .field("tx_dropped", net_stats.tx_dropped as i64)
-                .build()
-                .context("Failed to build network data point")?;
+            let data_point = format!(
+                "docker_container_network,endpoint_id={},endpoint_name={},container_id={},container_name={},interface={} rx_bytes={}i,rx_packets={}i,rx_errors={}i,rx_dropped={}i,tx_bytes={}i,tx_packets={}i,tx_errors={}i,tx_dropped={}i {}",
+                endpoint.id,
+                endpoint.name.replace(" ", "\\ "),
+                container.id.replace(" ", "\\ "),
+                container_name.replace(" ", "\\ "),
+                interface.replace(" ", "\\ "),
+                net_stats.rx_bytes as i64,
+                net_stats.rx_packets as i64,
+                net_stats.rx_errors as i64,
+                net_stats.rx_dropped as i64,
+                net_stats.tx_bytes as i64,
+                net_stats.tx_packets as i64,
+                net_stats.tx_errors as i64,
+                net_stats.tx_dropped as i64,
+                timestamp
+                    .timestamp_nanos_opt()
+                    .context("Failed to convert timestamp to nanoseconds")?
+            );
 
-            runtime
-                .block_on(influx_client.write(
-                    &config.influxdb_bucket,
-                    futures_util::stream::iter(vec![net_point]),
-                ))
-                .context("Failed to write network stats to InfluxDB")?;
+            data_sender
+                .send(data_point)
+                .context("Failed to send network data point to the InfluxDB writer")?;
         }
     }
 
@@ -325,43 +338,29 @@ fn process_container(
             let device = format!("{}:{}", blkio_stat.major, blkio_stat.minor);
             let op = blkio_stat.op.to_lowercase();
             let field_name = format!("blkio_{}_bytes", op);
-            let blkio_point = DataPoint::builder("docker_container_blkio")
-                .tag("endpoint_id", endpoint.id.to_string())
-                .tag("endpoint_name", endpoint.name.to_string())
-                .tag("container_id", container.id.to_string())
-                .tag("container_name", container_name.to_string())
-                .tag("device", device)
-                .tag("operation", op)
-                .field(&field_name, blkio_stat.value as i64)
-                .build()
-                .context("Failed to build blkio data point")?;
+            let data_point = format!(
+                "docker_container_blkio,endpoint_id={},endpoint_name={},container_id={},container_name={},device={},operation={} {}={}i {}",
+                endpoint.id,
+                endpoint.name.replace(" ", "\\ "),
+                container.id.replace(" ", "\\ "),
+                container_name.replace(" ", "\\ "),
+                device.replace(" ", "\\ "),
+                op.replace(" ", "\\ "),
+                field_name.replace(" ", "\\ "),
+                blkio_stat.value as i64,
+                timestamp
+                    .timestamp_nanos_opt()
+                    .context("Failed to convert timestamp to nanoseconds")?
+            );
 
-            runtime
-                .block_on(influx_client.write(
-                    &config.influxdb_bucket,
-                    futures_util::stream::iter(vec![blkio_point]),
-                ))
-                .context("Failed to write blkio stats to InfluxDB")?;
+            data_sender
+                .send(data_point)
+                .context("Failed to send blkio data point to the InfluxDB writer")?;
         }
     }
 
-    // Process Metrics
-    if let Some(pids_current) = stats.pids_stats.get("current") {
-        builder = builder.field("pids_current", *pids_current as i64);
-    }
-
-    // Write main stats
-    let point = builder.build().context("Failed to build main data point")?;
-
-    runtime
-        .block_on(influx_client.write(
-            &config.influxdb_bucket,
-            futures_util::stream::iter(vec![point]),
-        ))
-        .context("Failed to write main stats to InfluxDB")?;
-
     info!(
-        "Written metrics for container \"{}\" (endpoint \"{}\")",
+        "Sent metrics for container \"{}\" (endpoint \"{}\") to the outgoing queue",
         container_name, endpoint.name
     );
 
