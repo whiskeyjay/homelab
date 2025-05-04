@@ -30,7 +30,7 @@ cd "$BUILD_DIR"
 
 docker buildx build \
     -t whiskeyjay/ptn2influx:latest \
-    -t whiskeyjay/ptn2influx:0.1.1 \
+    -t whiskeyjay/ptn2influx:0.1.2 \
     -t whiskeyjay/ptn2influx:0.1 \
     --platform linux/amd64,linux/arm64 \
     --push \

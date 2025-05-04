@@ -5,6 +5,7 @@ use crate::models::*;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use crossbeam::channel::Sender;
+use futures_util::future::join_all;
 use influxdb_writer::InfluxDBWriter;
 use log::{error, info};
 use log4rs::{
@@ -12,8 +13,7 @@ use log4rs::{
     config::{Appender, Config, Root},
     encode::pattern::PatternEncoder,
 };
-use rayon::prelude::*;
-use reqwest::blocking::Client as HttpClient;
+use reqwest::Client as HttpClient;
 use std::time::{Duration, Instant};
 use std::{env, fs, thread};
 
@@ -27,7 +27,8 @@ struct AppConfig {
     poll_interval: Duration,
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let config = load_config()?;
 
     // Initialize logging
@@ -52,15 +53,22 @@ fn main() -> Result<()> {
         );
 
         let last_poll = Instant::now();
-        let endpoints = get_endpoints(&http_client, &config).context("Failed to get endpoints")?;
+        let endpoints = get_endpoints(&http_client, &config)
+            .await
+            .context("Failed to get endpoints")?;
 
         info!("Found {} endpoints.", endpoints.len());
 
-        endpoints.par_iter().for_each(|endpoint| {
-            if let Err(e) = process_endpoint(&http_client, &data_sender, &config, endpoint) {
-                error!("Error processing endpoint {}: {:?}", endpoint.id, e);
+        let futures: Vec<_> = endpoints
+            .iter()
+            .map(|endpoint| process_endpoint(&http_client, &data_sender, &config, endpoint))
+            .collect();
+
+        for result in join_all(futures).await {
+            if let Err(e) = result {
+                error!("Error processing endpoint: {:?}", e);
             }
-        });
+        }
 
         match config.poll_interval.checked_sub(last_poll.elapsed()) {
             Some(sleep_time) => {
@@ -149,20 +157,24 @@ fn create_influxdb_writer(
     Ok(writer.get_sender())
 }
 
-fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<Endpoint>> {
+async fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<Endpoint>> {
     let url = format!("{}/api/endpoints", &config.portainer_url);
     let response = client
         .get(&url)
         .header("X-API-Key", &config.portainer_api_key)
         .send()
+        .await
         .context("Failed to get endpoints")?;
 
-    let endpoints: Vec<Endpoint> = response.json().context("Failed to parse endpoints JSON")?;
+    let endpoints: Vec<Endpoint> = response
+        .json()
+        .await
+        .context("Failed to parse endpoints JSON")?;
 
     Ok(endpoints)
 }
 
-fn process_endpoint(
+async fn process_endpoint(
     http_client: &HttpClient,
     data_sender: &Sender<String>,
     config: &AppConfig,
@@ -170,7 +182,7 @@ fn process_endpoint(
 ) -> Result<()> {
     info!("Fetching containers from endpoint \"{}\"...", endpoint.name);
 
-    let containers = get_containers(http_client, config, endpoint.id)?;
+    let containers = get_containers(http_client, config, endpoint.id).await?;
 
     info!(
         "Found {} containers in endpoint \"{}\".",
@@ -178,32 +190,39 @@ fn process_endpoint(
         endpoint.name
     );
 
-    containers.par_iter().for_each(|container| {
+    let futures = containers.iter().map(|container| {
         let container_name = container
             .names
             .get(0)
             .map(|s| s.trim_start_matches('/'))
             .unwrap_or("unknown");
 
-        if let Err(e) = process_container(
-            http_client,
-            data_sender,
-            config,
-            endpoint,
-            container,
-            container_name,
-        ) {
-            error!(
-                "Error processing container \"{}\" (endpoint \"{}\"): {:?}",
-                container_name, endpoint.name, e
-            );
+        async move {
+            if let Err(e) = process_container(
+                http_client,
+                data_sender,
+                config,
+                endpoint,
+                container,
+                container_name,
+            )
+            .await
+            {
+                error!(
+                    "Error processing container \"{}\" (endpoint \"{}\"): {:?}",
+                    container_name, endpoint.name, e
+                );
+            }
         }
     });
+
+    // Execute all futures concurrently
+    join_all(futures).await;
 
     Ok(())
 }
 
-fn get_containers(
+async fn get_containers(
     client: &HttpClient,
     config: &AppConfig,
     endpoint_id: i32,
@@ -216,13 +235,17 @@ fn get_containers(
         .get(&url)
         .header("X-API-Key", &config.portainer_api_key)
         .send()
+        .await
         .context("Failed to get containers")?;
 
-    let containers: Vec<Container> = response.json().context("Failed to parse containers JSON")?;
+    let containers: Vec<Container> = response
+        .json()
+        .await
+        .context("Failed to parse containers JSON")?;
     Ok(containers)
 }
 
-fn process_container(
+async fn process_container(
     http_client: &HttpClient,
     data_sender: &Sender<String>,
     config: &AppConfig,
@@ -235,7 +258,8 @@ fn process_container(
         container_name, container.id, endpoint.name
     );
 
-    let stats = get_container_stats(http_client, config, endpoint.id, container.id.as_str())?;
+    let stats =
+        get_container_stats(http_client, config, endpoint.id, container.id.as_str()).await?;
     let mut main_stats = String::new();
 
     // Set tags
@@ -367,7 +391,7 @@ fn process_container(
     Ok(())
 }
 
-fn get_container_stats(
+async fn get_container_stats(
     client: &HttpClient,
     config: &AppConfig,
     endpoint_id: i32,
@@ -381,9 +405,13 @@ fn get_container_stats(
         .get(&url)
         .header("X-API-Key", &config.portainer_api_key)
         .send()
+        .await
         .context("Failed to get container stats")?;
 
-    let stats: Stats = response.json().context("Failed to parse stats JSON")?;
+    let stats: Stats = response
+        .json()
+        .await
+        .context("Failed to parse stats JSON")?;
     Ok(stats)
 }
 

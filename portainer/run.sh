@@ -6,7 +6,7 @@ SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
 export PORTAINER_URL=https://portainer.wang-home.net
 export PORTAINER_TOKEN_FILE=$SCRIPT_DIR/.secrets/portainer
-export INFLUXDB_URL=https://influxdb.wang-home.net
+export INFLUXDB_URL=https://influxaz.wang-home.net
 export INFLUXDB_TOKEN_FILE=$SCRIPT_DIR/.secrets/influxdb
 export INFLUXDB_ORG=18315178b6b5bc7e
 export INFLUXDB_BUCKET=a4e04404f8dd4cdb
