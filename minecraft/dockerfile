@@ -7,7 +7,7 @@ WORKDIR /minecraft
 RUN yum install -y udev wget && yum clean all
 
 # Download the Minecraft server jar
-RUN wget -O server.jar https://piston-data.mojang.com/v1/objects/e6ec2f64e6080b9b5d9b471b291c33cc7f509733/server.jar
+RUN wget -O server.jar https://piston-data.mojang.com/v1/objects/6e64dcabba3c01a7271b4fa6bd898483b794c59b/server.jar
 
 # Accept the EULA
 RUN echo "eula=true" > eula.txt

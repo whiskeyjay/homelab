@@ -1,5 +1,5 @@
 #!/bin/bash
 
 docker login -u whiskeyjay
-docker buildx build -t whiskeyjay/whmcsvr:latest -t whiskeyjay/whmcsvr:v1.21.5  --platform linux/amd64,linux/arm64 . --push
+docker buildx build -t whiskeyjay/whmcsvr:latest -t whiskeyjay/whmcsvr:v1.21.6  --platform linux/amd64,linux/arm64 . --push
 
