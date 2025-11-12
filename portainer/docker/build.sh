@@ -52,13 +52,14 @@ cp "$SCRIPT_DIR/entrypoint.sh" "$BUILD_DIR"
 
 cd "$BUILD_DIR"
 
-# Push with platform-specific tags
-docker buildx build \
+# Build and push with platform-specific tags
+docker build \
     -t $IMAGE_NAME:$VERSION-$DOCKER_ARCH \
     -t $IMAGE_NAME:$MINOR_VERSION-$DOCKER_ARCH \
-    --platform "$DOCKER_PLATFORM" \
-    --push \
     .
+
+docker push $IMAGE_NAME:$VERSION-$DOCKER_ARCH
+docker push $IMAGE_NAME:$MINOR_VERSION-$DOCKER_ARCH
 
 echo ""
 echo "============================================"
