@@ -2,6 +2,11 @@
 
 # You need to be logged in to Docker Hub before running this script.
 
+# Version configuration
+VERSION="0.1.3"
+MINOR_VERSION="0.1"
+IMAGE_NAME="whiskeyjay/ptn2influx"
+
 # Script directory
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 
@@ -47,10 +52,34 @@ cp "$SCRIPT_DIR/entrypoint.sh" "$BUILD_DIR"
 
 cd "$BUILD_DIR"
 
+# Push with platform-specific tags
 docker buildx build \
-    -t whiskeyjay/ptn2influx:latest \
-    -t whiskeyjay/ptn2influx:0.1.3 \
-    -t whiskeyjay/ptn2influx:0.1 \
+    -t $IMAGE_NAME:$VERSION-$DOCKER_ARCH \
+    -t $IMAGE_NAME:$MINOR_VERSION-$DOCKER_ARCH \
     --platform "$DOCKER_PLATFORM" \
     --push \
     .
+
+echo ""
+echo "============================================"
+echo "Image pushed: $IMAGE_NAME:$VERSION-$DOCKER_ARCH"
+echo "============================================"
+echo ""
+echo "After building on BOTH architectures, run this command to create the multi-arch manifest:"
+echo ""
+echo "docker manifest create $IMAGE_NAME:latest \\"
+echo "  $IMAGE_NAME:$VERSION-amd64 \\"
+echo "  $IMAGE_NAME:$VERSION-arm64"
+echo ""
+echo "docker manifest create $IMAGE_NAME:$VERSION \\"
+echo "  $IMAGE_NAME:$VERSION-amd64 \\"
+echo "  $IMAGE_NAME:$VERSION-arm64"
+echo ""
+echo "docker manifest create $IMAGE_NAME:$MINOR_VERSION \\"
+echo "  $IMAGE_NAME:$VERSION-amd64 \\"
+echo "  $IMAGE_NAME:$VERSION-arm64"
+echo ""
+echo "docker manifest push $IMAGE_NAME:latest"
+echo "docker manifest push $IMAGE_NAME:$VERSION"
+echo "docker manifest push $IMAGE_NAME:$MINOR_VERSION"
+echo ""
