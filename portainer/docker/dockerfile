@@ -1,13 +1,20 @@
-# Use Alpine for minimal size with utilities
-FROM alpine:latest
+# Use Debian slim for glibc compatibility with minimal size
+FROM debian:trixie-slim
 
 ARG TARGETPLATFORM
+
+# Install OpenSSL runtime libraries and CA certificates
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3t64 && \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy the application binary
 COPY ./bin/${TARGETPLATFORM}/ptn2influx /app/ptn2influx
 
 # Create a non-root user and group
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN groupadd -r appgroup && useradd -r -g appgroup appuser
 
 # Copy an entrypoint script to handle secrets
 COPY ./entrypoint.sh /app/entrypoint.sh
