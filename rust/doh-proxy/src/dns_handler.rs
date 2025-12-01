@@ -32,6 +32,12 @@ impl RequestHandler for DnsHandler {
         
         tracing::debug!("Received DNS query: {:?}", query);
         
+        // Log DNSSEC request status
+        if let Some(edns) = request.edns() {
+            tracing::debug!("EDNS present: DO bit={}, buffer_size={}", 
+                edns.flags().dnssec_ok, edns.max_payload());
+        }
+        
         // Build a message from the request, preserving important flags
         let mut query_msg = hickory_proto::op::Message::new();
         query_msg.set_id(request.id());
@@ -57,7 +63,11 @@ impl RequestHandler for DnsHandler {
             edns_builder.set_max_payload(edns.max_payload());
             edns_builder.set_version(edns.version());
             
-            // Copy EDNS options including DNSSEC OK flag - this is critical for Pi-hole
+            // CRITICAL: Set the DNSSEC OK (DO) bit if present in request
+            // This tells upstream servers to include DNSSEC records in their response
+            edns_builder.set_dnssec_ok(edns.flags().dnssec_ok);
+            
+            // Copy EDNS options
             for (_code, opt) in edns.options().as_ref() {
                 edns_builder.options_mut().insert(opt.clone());
             }
