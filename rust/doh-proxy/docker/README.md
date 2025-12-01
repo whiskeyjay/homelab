@@ -53,7 +53,7 @@ docker run -d \
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `LISTEN_ADDR` | Address to listen for DNS queries | `0.0.0.0:5053` |
-| `DOH_SERVERS` | Comma-separated list of DoH servers | `https://cloudflare-dns.com/dns-query,https://dns.google/dns-query` |
+| `DOH_SERVERS` | Comma-separated list of DoH servers | `https://1.1.1.1/dns-query,https://8.8.8.8/dns-query` |
 | `TIMEOUT_SECS` | Timeout for DoH queries in seconds | `5` |
 | `CACHE_SIZE` | Maximum number of cached DNS responses | `10000` |
 | `VERBOSE` | Enable verbose logging (true/false) | `false` |
@@ -66,7 +66,7 @@ docker run -d \
   --name doh-proxy-secure \
   -p 5053:5053/udp \
   -p 5053:5053/tcp \
-  -e DOH_SERVERS=https://security.cloudflare-dns.com/dns-query \
+  -e DOH_SERVERS=https://1.1.1.2/dns-query \
   doh-proxy:latest
 ```
 
@@ -76,7 +76,7 @@ docker run -d \
   --name doh-proxy-family \
   -p 5053:5053/udp \
   -p 5053:5053/tcp \
-  -e DOH_SERVERS=https://family.cloudflare-dns.com/dns-query \
+  -e DOH_SERVERS=https://1.1.1.3/dns-query \
   doh-proxy:latest
 ```
 
@@ -86,7 +86,7 @@ docker run -d \
   --name doh-proxy \
   -p 5053:5053/udp \
   -p 5053:5053/tcp \
-  -e DOH_SERVERS=https://dns.quad9.net/dns-query,https://dns.adguard.com/dns-query,https://cloudflare-dns.com/dns-query \
+  -e DOH_SERVERS=https://9.9.9.9/dns-query,https://94.140.14.14/dns-query,https://1.1.1.1/dns-query \
   doh-proxy:latest
 ```
 
@@ -119,7 +119,7 @@ services:
       - "5053:5053/tcp"
     environment:
       LISTEN_ADDR: "0.0.0.0:5053"
-      DOH_SERVERS: "https://cloudflare-dns.com/dns-query,https://dns.google/dns-query"
+      DOH_SERVERS: "https://1.1.1.1/dns-query,https://8.8.8.8/dns-query"
       TIMEOUT_SECS: "5"
       CACHE_SIZE: "10000"
       VERBOSE: "false"

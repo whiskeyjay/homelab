@@ -41,7 +41,7 @@ Options:
           Address to listen for DNS queries [default: 0.0.0.0:53]
   -s, --doh-server <DOH_SERVERS>...
           DoH upstream servers (can be specified multiple times)
-          [default: https://cloudflare-dns.com/dns-query https://dns.google/dns-query]
+          [default: https://1.1.1.1/dns-query https://8.8.8.8/dns-query]
   -t, --timeout-secs <TIMEOUT_SECS>
           Timeout for DoH queries in seconds [default: 5]
   -c, --cache-size <CACHE_SIZE>
@@ -63,12 +63,12 @@ Options:
 
 **For Pi-hole with DNSSEC (recommended):**
 ```powershell
-.\target\release\doh-proxy.exe -s https://dns.quad9.net/dns-query
+.\target\release\doh-proxy.exe -s https://9.9.9.9/dns-query
 ```
 
 **Use custom DoH servers:**
 ```powershell
-.\target\release\doh-proxy.exe -s https://dns.quad9.net/dns-query -s https://dns.adguard.com/dns-query
+.\target\release\doh-proxy.exe -s https://9.9.9.9/dns-query -s https://94.140.14.14/dns-query
 ```
 
 **Listen on localhost only:**
@@ -221,15 +221,17 @@ Client
 The proxy works with any RFC 8484 compliant DoH server. Popular options include:
 
 ### Best for DNSSEC (Pi-hole compatible)
-- **Quad9**: `https://dns.quad9.net/dns-query` ⭐ **Recommended for Pi-hole**
-- **Cloudflare**: `https://cloudflare-dns.com/dns-query`
-- **Cloudflare (Malware blocking)**: `https://security.cloudflare-dns.com/dns-query`
-- **Cloudflare (Malware + Adult content blocking)**: `https://family.cloudflare-dns.com/dns-query`
+- **Quad9**: `https://9.9.9.9/dns-query` ⭐ **Recommended for Pi-hole**
+- **Cloudflare**: `https://1.1.1.1/dns-query`
+- **Cloudflare (Malware blocking)**: `https://1.1.1.2/dns-query`
+- **Cloudflare (Malware + Adult content blocking)**: `https://1.1.1.3/dns-query`
 
 ### Other Options
-- **Google**: `https://dns.google/dns-query`
-- **AdGuard**: `https://dns.adguard.com/dns-query`
-- **OpenDNS**: `https://doh.opendns.com/dns-query`
+- **Google**: `https://8.8.8.8/dns-query`
+- **AdGuard**: `https://94.140.14.14/dns-query`
+- **OpenDNS**: `https://146.112.41.2/dns-query`
+
+> **Note**: Using IP addresses instead of hostnames avoids the DNS bootstrap problem (having to resolve the DoH server's hostname before you can make DNS queries).
 
 > **Note for Pi-hole users**: Some DoH providers may return incomplete DNSSEC chains for TLD queries (e.g., `.com`, `.net`). If you see "Insecure DS reply" warnings in Pi-hole for TLDs, this is usually harmless but indicates the upstream DoH server's DNSSEC support is incomplete. Quad9 and Cloudflare generally provide the most complete DNSSEC validation. You can also disable DNSSEC in Pi-hole if these warnings are concerning: Settings → DNS → Uncheck "Use DNSSEC".
 

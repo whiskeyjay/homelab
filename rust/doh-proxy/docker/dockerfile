@@ -21,7 +21,7 @@ RUN chmod +x /app/entrypoint.sh /app/doh-proxy
 
 # Environment variables with defaults
 ENV LISTEN_ADDR="0.0.0.0:5053" \
-    DOH_SERVERS="https://cloudflare-dns.com/dns-query,https://dns.google/dns-query" \
+    DOH_SERVERS="https://1.1.1.1/dns-query,https://8.8.8.8/dns-query" \
     TIMEOUT_SECS="5" \
     CACHE_SIZE="10000" \
     VERBOSE="false"

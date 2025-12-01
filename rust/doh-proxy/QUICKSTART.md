@@ -106,7 +106,7 @@ When running successfully, you should see:
 ```
 DoH Proxy starting...
 Listen address: 0.0.0.0:53
-DoH servers: ["https://cloudflare-dns.com/dns-query", "https://dns.google/dns-query"]
+DoH servers: ["https://1.1.1.1/dns-query", "https://8.8.8.8/dns-query"]
 Timeout: 5s
 Cache size: 10000 entries
 UDP DNS server listening on 0.0.0.0:53

@@ -12,10 +12,10 @@ pub struct Config {
     pub listen_addr: String,
 
     /// DoH upstream servers (can be specified multiple times)
-    /// Example: --doh-server https://cloudflare-dns.com/dns-query
+    /// Example: --doh-server https://1.1.1.1/dns-query (Cloudflare)
     #[arg(short = 's', long = "doh-server", default_values_t = vec![
-        "https://cloudflare-dns.com/dns-query".to_string(),
-        "https://dns.google/dns-query".to_string(),
+        "https://1.1.1.1/dns-query".to_string(),      // Cloudflare DNS
+        "https://8.8.8.8/dns-query".to_string(),      // Google DNS
     ])]
     pub doh_servers: Vec<String>,
 
