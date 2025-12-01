@@ -44,7 +44,7 @@ fi
 mkdir -p "$BUILD_DIR"
 mkdir -p "$BUILD_DIR/bin/linux/$DOCKER_ARCH"
 
-cd "$SCRIPT_DIR/.."
+cd "$SCRIPT_DIR/../.."
 cp "target/$RUST_TARGET/release/ptn2influx" "$BUILD_DIR/bin/linux/$DOCKER_ARCH/"
 
 cp "$SCRIPT_DIR/dockerfile" "$BUILD_DIR"
