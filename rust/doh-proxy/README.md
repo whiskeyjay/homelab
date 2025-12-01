@@ -6,6 +6,7 @@ A DNS proxy server that translates traditional DNS queries to DNS-over-HTTPS (Do
 
 - **DNS Server**: Listens for traditional DNS queries (both UDP and TCP) on any network interface
 - **DoH Client**: Forwards queries to configurable DoH upstream servers using HTTPS
+- **DNSSEC Support**: Full DNSSEC validation support - compatible with Pi-hole and other DNSSEC-aware DNS servers
 - **DNS Caching**: Intelligent caching with TTL-based expiration for fast repeated queries
 - **Automatic Fallback**: If one DoH server fails, automatically tries the next one
 - **Fully Configurable**: All options available via command-line arguments

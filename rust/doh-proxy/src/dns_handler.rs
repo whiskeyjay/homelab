@@ -32,12 +32,16 @@ impl RequestHandler for DnsHandler {
         
         tracing::debug!("Received DNS query: {:?}", query);
         
-        // Build a message from the request
+        // Build a message from the request, preserving important flags
         let mut query_msg = hickory_proto::op::Message::new();
         query_msg.set_id(request.id());
         query_msg.set_message_type(hickory_proto::op::MessageType::Query);
-        query_msg.set_op_code(hickory_proto::op::OpCode::Query);
-        query_msg.set_recursion_desired(true);
+        query_msg.set_op_code(request.op_code());
+        query_msg.set_recursion_desired(request.recursion_desired());
+        
+        // Preserve DNSSEC-related flags
+        query_msg.set_checking_disabled(request.checking_disabled());
+        query_msg.set_authentic_data(request.authentic_data());
         
         // Create a proper Query from the LowerQuery
         let name = query.name().into();
@@ -46,6 +50,20 @@ impl RequestHandler for DnsHandler {
             query.query_type(),
         );
         query_msg.add_query(hickory_query);
+        
+        // Preserve EDNS settings (including DNSSEC OK flag)
+        if let Some(edns) = request.edns() {
+            let mut edns_builder = hickory_proto::op::Edns::new();
+            edns_builder.set_max_payload(edns.max_payload());
+            edns_builder.set_version(edns.version());
+            
+            // Copy EDNS options including DNSSEC OK flag - this is critical for Pi-hole
+            for (_code, opt) in edns.options().as_ref() {
+                edns_builder.options_mut().insert(opt.clone());
+            }
+            
+            query_msg.set_edns(edns_builder);
+        }
         
         // Forward the request to DoH upstream
         match self.doh_client.query(&query_msg).await {
