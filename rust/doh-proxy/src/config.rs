@@ -10,7 +10,7 @@ pub struct Config {
     /// Use 0.0.0.0:53 for all interfaces, 127.0.0.1:53 for localhost only
     #[arg(short, long, default_value = "0.0.0.0:53")]
     pub listen_addr: String,
-    
+
     /// DoH upstream servers (can be specified multiple times)
     /// Example: --doh-server https://cloudflare-dns.com/dns-query
     #[arg(short = 's', long = "doh-server", default_values_t = vec![
@@ -18,15 +18,15 @@ pub struct Config {
         "https://dns.google/dns-query".to_string(),
     ])]
     pub doh_servers: Vec<String>,
-    
+
     /// Timeout for DoH queries in seconds
     #[arg(short, long, default_value = "5")]
     pub timeout_secs: u64,
-    
+
     /// Maximum number of cached DNS responses (0 to disable caching)
     #[arg(short, long, default_value = "10000")]
     pub cache_size: u64,
-    
+
     /// Enable verbose logging (shows cache hits/misses)
     #[arg(short, long)]
     pub verbose: bool,

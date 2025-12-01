@@ -1,9 +1,9 @@
 use anyhow::{anyhow, Result};
+use hickory_proto::op::Message;
+use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use moka::future::Cache;
 use reqwest::Client;
 use std::time::Duration;
-use hickory_proto::op::Message;
-use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 
 // Cache key: (query name, query type)
 type CacheKey = (String, u16);
@@ -21,12 +21,10 @@ impl DohClient {
             .use_native_tls()
             .timeout(Duration::from_secs(timeout_secs))
             .build()?;
-        
+
         // Create cache with configurable size
-        let cache = Cache::builder()
-            .max_capacity(cache_size)
-            .build();
-        
+        let cache = Cache::builder().max_capacity(cache_size).build();
+
         Ok(Self {
             client,
             servers,
@@ -34,7 +32,7 @@ impl DohClient {
             cache,
         })
     }
-    
+
     /// Query a DoH server with the DNS message (with caching)
     pub async fn query(&self, request: &Message) -> Result<Message> {
         // Extract query information for cache key
@@ -43,7 +41,7 @@ impl DohClient {
                 query.name().to_string().to_lowercase(),
                 query.query_type().into(),
             );
-            
+
             // Check cache first
             if let Some(cached_response) = self.cache.get(&cache_key).await {
                 tracing::debug!("Cache HIT for {}", query.name());
@@ -52,35 +50,35 @@ impl DohClient {
                 response.set_id(request.id());
                 return Ok(response);
             }
-            
+
             tracing::debug!("Cache MISS for {}", query.name());
-            
+
             // Query upstream
             match self.query_upstream(request).await {
                 Ok(response) => {
                     // Calculate TTL from response records
                     let ttl = self.calculate_ttl(&response);
-                    
+
                     if ttl > 0 {
                         // Store in cache with TTL
                         let cache_clone = self.cache.clone();
                         let key_clone = cache_key.clone();
                         let response_clone = response.clone();
-                        
+
                         tokio::spawn(async move {
                             cache_clone.insert(key_clone, response_clone).await;
                         });
-                        
+
                         // Schedule cache invalidation after TTL
                         let cache_for_expiry = self.cache.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_secs(ttl as u64)).await;
                             cache_for_expiry.invalidate(&cache_key).await;
                         });
-                        
+
                         tracing::debug!("Cached response for {} with TTL {}s", query.name(), ttl);
                     }
-                    
+
                     Ok(response)
                 }
                 Err(e) => Err(e),
@@ -90,18 +88,21 @@ impl DohClient {
             self.query_upstream(request).await
         }
     }
-    
+
     /// Calculate minimum TTL from all records in the response
     fn calculate_ttl(&self, response: &Message) -> u32 {
         let mut min_ttl = u32::MAX;
-        
+
         // Check all record sections
-        for record in response.answers().iter()
+        for record in response
+            .answers()
+            .iter()
             .chain(response.name_servers().iter())
-            .chain(response.additionals().iter()) {
+            .chain(response.additionals().iter())
+        {
             min_ttl = min_ttl.min(record.ttl());
         }
-        
+
         // Use a reasonable default if no records or TTL is too high
         if min_ttl == u32::MAX {
             300 // 5 minutes default
@@ -109,24 +110,28 @@ impl DohClient {
             min_ttl.min(3600) // Cap at 1 hour
         }
     }
-    
+
     /// Query upstream DoH servers without caching
     async fn query_upstream(&self, request: &Message) -> Result<Message> {
         // Serialize the DNS message to wire format
         let request_bytes = request.to_bytes()?;
-        
+
         // Try each server in order until one succeeds
         let mut last_error = None;
-        
+
         for i in 0..self.servers.len() {
-            let server_index = (self.current_server_index.load(std::sync::atomic::Ordering::Relaxed) + i) 
+            let server_index = (self
+                .current_server_index
+                .load(std::sync::atomic::Ordering::Relaxed)
+                + i)
                 % self.servers.len();
             let server = &self.servers[server_index];
-            
+
             match self.query_server(server, &request_bytes).await {
                 Ok(response) => {
                     // Update current server on success
-                    self.current_server_index.store(server_index, std::sync::atomic::Ordering::Relaxed);
+                    self.current_server_index
+                        .store(server_index, std::sync::atomic::Ordering::Relaxed);
                     return Ok(response);
                 }
                 Err(e) => {
@@ -135,27 +140,28 @@ impl DohClient {
                 }
             }
         }
-        
+
         Err(last_error.unwrap_or_else(|| anyhow!("No DoH servers available")))
     }
-    
+
     async fn query_server(&self, server: &str, request_bytes: &[u8]) -> Result<Message> {
         // Use POST method with DNS wireformat in body
-        let response = self.client
+        let response = self
+            .client
             .post(server)
             .header("Content-Type", "application/dns-message")
             .header("Accept", "application/dns-message")
             .body(request_bytes.to_vec())
             .send()
             .await?;
-        
+
         if !response.status().is_success() {
             return Err(anyhow!("DoH server returned status: {}", response.status()));
         }
-        
+
         let response_bytes = response.bytes().await?;
         let dns_response = Message::from_bytes(&response_bytes)?;
-        
+
         Ok(dns_response)
     }
 }
