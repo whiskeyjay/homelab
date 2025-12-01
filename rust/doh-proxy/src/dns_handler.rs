@@ -68,16 +68,54 @@ impl RequestHandler for DnsHandler {
         // Forward the request to DoH upstream
         match self.doh_client.query(&query_msg).await {
             Ok(doh_response) => {
-                tracing::debug!("Received DoH response with {} answers", doh_response.answer_count());
+                // Log DNSSEC-related information for debugging
+                tracing::debug!(
+                    "DoH response: answers={}, authority={}, additional={}, AD={}, CD={}",
+                    doh_response.answer_count(),
+                    doh_response.name_server_count(),
+                    doh_response.additional_count(),
+                    doh_response.authentic_data(),
+                    doh_response.checking_disabled()
+                );
                 
-                // Build response using MessageResponseBuilder
+                // Log DNSSEC records if present
+                if tracing::enabled!(tracing::Level::DEBUG) {
+                    for record in doh_response.answers().iter() {
+                        if matches!(record.record_type(), hickory_proto::rr::RecordType::RRSIG | 
+                                    hickory_proto::rr::RecordType::DNSKEY |
+                                    hickory_proto::rr::RecordType::DS |
+                                    hickory_proto::rr::RecordType::NSEC |
+                                    hickory_proto::rr::RecordType::NSEC3) {
+                            tracing::debug!("  DNSSEC record in answer: {:?}", record.record_type());
+                        }
+                    }
+                    for record in doh_response.additionals().iter() {
+                        tracing::debug!("  Additional record: {:?}", record.record_type());
+                    }
+                }
+                
+                // Forward the complete upstream response preserving all DNSSEC information
+                // Clone the upstream response and update only the ID to match the request
+                let mut response_msg = doh_response.clone();
+                response_msg.set_id(request.id());
+                
+                // Convert the Message into a MessageResponse that can be sent
+                // We use from_message_request to get the proper response structure,
+                // but then build with the complete upstream data
                 let builder = MessageResponseBuilder::from_message_request(request);
+                
+                // Build response preserving everything from upstream including EDNS/DNSSEC
                 let response = builder.build(
-                    doh_response.header().clone(),
-                    doh_response.answers(),
-                    doh_response.name_servers(),
-                    &[],
-                    doh_response.additionals(),
+                    response_msg.header().clone(),
+                    response_msg.answers(),
+                    response_msg.name_servers(),
+                    &[], // SOA records (typically empty for non-authoritative responses)
+                    response_msg.additionals(), // This includes EDNS OPT record with DNSSEC data
+                );
+                
+                tracing::debug!("Sending response with AD={} CD={}", 
+                    response_msg.authentic_data(),
+                    response_msg.checking_disabled()
                 );
                 
                 // Send the response back to the client

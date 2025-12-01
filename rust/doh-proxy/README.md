@@ -61,6 +61,11 @@ Options:
 .\target\release\doh-proxy.exe
 ```
 
+**For Pi-hole with DNSSEC (recommended):**
+```powershell
+.\target\release\doh-proxy.exe -s https://dns.quad9.net/dns-query
+```
+
 **Use custom DoH servers:**
 ```powershell
 .\target\release\doh-proxy.exe -s https://dns.quad9.net/dns-query -s https://dns.adguard.com/dns-query
@@ -215,13 +220,18 @@ Client
 
 The proxy works with any RFC 8484 compliant DoH server. Popular options include:
 
+### Best for DNSSEC (Pi-hole compatible)
+- **Quad9**: `https://dns.quad9.net/dns-query` ⭐ **Recommended for Pi-hole**
 - **Cloudflare**: `https://cloudflare-dns.com/dns-query`
 - **Cloudflare (Malware blocking)**: `https://security.cloudflare-dns.com/dns-query`
 - **Cloudflare (Malware + Adult content blocking)**: `https://family.cloudflare-dns.com/dns-query`
+
+### Other Options
 - **Google**: `https://dns.google/dns-query`
-- **Quad9**: `https://dns.quad9.net/dns-query`
 - **AdGuard**: `https://dns.adguard.com/dns-query`
 - **OpenDNS**: `https://doh.opendns.com/dns-query`
+
+> **Note for Pi-hole users**: Some DoH providers may return incomplete DNSSEC chains for TLD queries (e.g., `.com`, `.net`). If you see "Insecure DS reply" warnings in Pi-hole for TLDs, this is usually harmless but indicates the upstream DoH server's DNSSEC support is incomplete. Quad9 and Cloudflare generally provide the most complete DNSSEC validation. You can also disable DNSSEC in Pi-hole if these warnings are concerning: Settings → DNS → Uncheck "Use DNSSEC".
 
 ## Performance
 
