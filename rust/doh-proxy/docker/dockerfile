@@ -1,0 +1,34 @@
+# Use Debian slim for glibc compatibility with minimal size
+FROM debian:trixie-slim
+
+ARG TARGETPLATFORM
+
+# Install runtime dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    libssl3t64 && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the application binary (built by build.sh)
+COPY ./bin/${TARGETPLATFORM}/doh-proxy /app/doh-proxy
+
+# Copy entrypoint script
+COPY ./entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh /app/doh-proxy
+
+# Environment variables with defaults
+ENV LISTEN_ADDR="0.0.0.0:5053" \
+    DOH_SERVERS="https://cloudflare-dns.com/dns-query,https://dns.google/dns-query" \
+    TIMEOUT_SECS="5" \
+    CACHE_SIZE="10000" \
+    VERBOSE="false"
+
+# Expose DNS ports
+EXPOSE 5053/udp
+EXPOSE 5053/tcp
+
+# Use entrypoint script to handle env vars
+ENTRYPOINT ["/app/entrypoint.sh"]

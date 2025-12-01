@@ -6,7 +6,7 @@
 set -e
 
 # Version configuration
-VERSION="0.1.3"
+VERSION="0.1.4"
 MINOR_VERSION="0.1"
 IMAGE_NAME="whiskeyjay/ptn2influx"
 

@@ -1,0 +1,11 @@
+target/
+docker/
+.git/
+.gitignore
+*.md
+!docker/README.md
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

@@ -3,7 +3,7 @@
 # You need to be logged in to Docker Hub before running this script.
 
 # Version configuration
-VERSION="0.1.3"
+VERSION="0.1.4"
 MINOR_VERSION="0.1"
 IMAGE_NAME="whiskeyjay/ptn2influx"
 

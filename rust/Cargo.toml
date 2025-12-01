@@ -1,0 +1,10 @@
+[workspace]
+members = ["doh-proxy", "portainer"]
+
+resolver = "2"
+
+[profile.release]
+codegen-units = 1
+incremental = false
+lto = "fat"
+opt-level = 3
