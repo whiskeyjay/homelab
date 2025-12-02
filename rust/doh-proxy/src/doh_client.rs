@@ -12,7 +12,7 @@ pub struct DohClient {
     client: Client,
     servers: Vec<String>,
     current_server_index: std::sync::atomic::AtomicUsize,
-    cache: Cache<CacheKey, Message>,
+    cache: Option<Cache<CacheKey, Message>>,
 }
 
 impl DohClient {
@@ -22,8 +22,12 @@ impl DohClient {
             .timeout(Duration::from_secs(timeout_secs))
             .build()?;
 
-        // Create cache with configurable size
-        let cache = Cache::builder().max_capacity(cache_size).build();
+        // Create cache only if cache_size > 0
+        let cache = if cache_size > 0 {
+            Some(Cache::builder().max_capacity(cache_size).build())
+        } else {
+            None
+        };
 
         Ok(Self {
             client,
@@ -35,6 +39,11 @@ impl DohClient {
 
     /// Query a DoH server with the DNS message (with caching)
     pub async fn query(&self, request: &Message) -> Result<Message> {
+        // If caching is disabled, directly query upstream
+        if self.cache.is_none() {
+            return self.query_upstream(request).await;
+        }
+
         // Extract query information for cache key
         if let Some(query) = request.queries().first() {
             let cache_key = (
@@ -42,8 +51,9 @@ impl DohClient {
                 query.query_type().into(),
             );
 
-            // Check cache first
-            if let Some(cached_response) = self.cache.get(&cache_key).await {
+            // Check cache first (safe to unwrap since we checked is_none above)
+            let cache = self.cache.as_ref().unwrap();
+            if let Some(cached_response) = cache.get(&cache_key).await {
                 tracing::debug!("Cache HIT for {}", query.name());
                 // Clone and update the message ID to match the request
                 let mut response = cached_response.clone();
@@ -61,7 +71,7 @@ impl DohClient {
 
                     if ttl > 0 {
                         // Store in cache with TTL
-                        let cache_clone = self.cache.clone();
+                        let cache_clone = cache.clone();
                         let key_clone = cache_key.clone();
                         let response_clone = response.clone();
 
@@ -70,7 +80,7 @@ impl DohClient {
                         });
 
                         // Schedule cache invalidation after TTL
-                        let cache_for_expiry = self.cache.clone();
+                        let cache_for_expiry = cache.clone();
                         tokio::spawn(async move {
                             tokio::time::sleep(Duration::from_secs(ttl as u64)).await;
                             cache_for_expiry.invalidate(&cache_key).await;

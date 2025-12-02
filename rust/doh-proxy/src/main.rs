@@ -30,7 +30,11 @@ async fn main() -> Result<()> {
     info!("Listen address: {}", config.listen_addr);
     info!("DoH servers: {:?}", config.doh_servers);
     info!("Timeout: {}s", config.timeout_secs);
-    info!("Cache size: {} entries", config.cache_size);
+    if config.cache_size > 0 {
+        info!("Cache: enabled ({} entries)", config.cache_size);
+    } else {
+        info!("Cache: disabled");
+    }
 
     // Create DoH client
     let doh_client = Arc::new(DohClient::new(
