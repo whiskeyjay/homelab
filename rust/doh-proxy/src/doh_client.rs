@@ -111,7 +111,7 @@ impl DohClient {
             let rcode = response.response_code();
             let cacheable = rcode == hickory_proto::op::ResponseCode::NoError
                 || rcode == hickory_proto::op::ResponseCode::NXDomain;
-            let ttl = self.calculate_ttl(&response);
+            let ttl = Self::calculate_ttl(&response);
             if cacheable && ttl > 0 {
                 cache
                     .insert(
@@ -130,7 +130,7 @@ impl DohClient {
     }
 
     /// Calculate minimum TTL from all records in the response
-    fn calculate_ttl(&self, response: &Message) -> u32 {
+    fn calculate_ttl(response: &Message) -> u32 {
         let mut min_ttl = u32::MAX;
 
         // Check answer and authority sections, skipping additionals
@@ -289,8 +289,6 @@ mod tests {
 
     #[test]
     fn calculate_ttl_uses_minimum_across_sections() {
-        let client = DohClient::new(vec!["https://dummy".into()], 5, 0).unwrap();
-
         let mut msg = Message::new();
         msg.add_answer(Record::from_rdata(
             Name::from_str("a.example.").unwrap(),
@@ -303,13 +301,11 @@ mod tests {
             RData::A(A(Ipv4Addr::LOCALHOST)),
         ));
 
-        assert_eq!(client.calculate_ttl(&msg), 120);
+        assert_eq!(DohClient::calculate_ttl(&msg), 120);
     }
 
     #[test]
     fn calculate_ttl_caps_at_one_hour() {
-        let client = DohClient::new(vec!["https://dummy".into()], 5, 0).unwrap();
-
         let mut msg = Message::new();
         msg.add_answer(Record::from_rdata(
             Name::from_str("a.example.").unwrap(),
@@ -317,14 +313,13 @@ mod tests {
             RData::A(A(Ipv4Addr::LOCALHOST)),
         ));
 
-        assert_eq!(client.calculate_ttl(&msg), 3600);
+        assert_eq!(DohClient::calculate_ttl(&msg), 3600);
     }
 
     #[test]
     fn calculate_ttl_default_when_no_records() {
-        let client = DohClient::new(vec!["https://dummy".into()], 5, 0).unwrap();
         let msg = Message::new();
-        assert_eq!(client.calculate_ttl(&msg), 300);
+        assert_eq!(DohClient::calculate_ttl(&msg), 300);
     }
 
     // --- constructor tests ---
@@ -546,8 +541,6 @@ mod tests {
 
     #[test]
     fn calculate_ttl_ignores_additional_section() {
-        let client = DohClient::new(vec!["https://dummy".into()], 5, 0).unwrap();
-
         let mut msg = Message::new();
         msg.add_answer(Record::from_rdata(
             Name::from_str("a.example.").unwrap(),
@@ -562,7 +555,7 @@ mod tests {
         ));
 
         // TTL should come from the answer section only, not the additional
-        assert_eq!(client.calculate_ttl(&msg), 300);
+        assert_eq!(DohClient::calculate_ttl(&msg), 300);
     }
 
     #[tokio::test]
