@@ -93,6 +93,20 @@ impl DohClient {
 
         let response = self.query_upstream(request).await?;
 
+        // Validate response matches the original query
+        if let Some(req_query) = request.queries().first() {
+            let valid = response.queries().first().is_some_and(|resp_query| {
+                resp_query.name() == req_query.name()
+                    && resp_query.query_type() == req_query.query_type()
+                    && resp_query.query_class() == req_query.query_class()
+            });
+            if !valid {
+                return Err(anyhow!(
+                    "DoH response query section does not match request"
+                ));
+            }
+        }
+
         if let Some((cache, cache_key, query_name)) = cache {
             let rcode = response.response_code();
             let cacheable = rcode == hickory_proto::op::ResponseCode::NoError
@@ -188,6 +202,19 @@ impl DohClient {
             return Err(anyhow!("DoH server returned status: {}", response.status()));
         }
 
+        // Validate Content-Type to catch misconfigured servers or captive portals
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !content_type.starts_with("application/dns-message") {
+            return Err(anyhow!(
+                "DoH server returned unexpected Content-Type: {}",
+                content_type
+            ));
+        }
+
         if let Some(len) = response.content_length() {
             if len > MAX_DNS_RESPONSE_SIZE {
                 return Err(anyhow!(
@@ -241,6 +268,11 @@ mod tests {
         msg.set_op_code(OpCode::Query);
         msg.set_recursion_desired(true);
         msg.set_recursion_available(true);
+
+        // Copy query section from request so response validation passes
+        for query in request.queries() {
+            msg.add_query(query.clone());
+        }
 
         for mut record in records {
             record.set_ttl(ttl);
@@ -488,6 +520,9 @@ mod tests {
         servfail_resp.set_id(query.id());
         servfail_resp.set_message_type(MessageType::Response);
         servfail_resp.set_response_code(hickory_proto::op::ResponseCode::ServFail);
+        for q in query.queries() {
+            servfail_resp.add_query(q.clone());
+        }
 
         Mock::given(method("POST"))
             .respond_with(
@@ -555,5 +590,129 @@ mod tests {
         let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
         let result = client.query(&query).await;
         assert!(result.is_ok());
+    }
+
+    // --- Content-Type validation tests (item 4) ---
+
+    #[tokio::test]
+    async fn query_rejects_wrong_content_type() {
+        let server = MockServer::start().await;
+        let query = make_query("example.com.", RecordType::A);
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("<html>captive portal</html>")
+                    .append_header("Content-Type", "text/html"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
+        let result = client.query(&query).await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected Content-Type"));
+    }
+
+    #[tokio::test]
+    async fn query_rejects_missing_content_type() {
+        let server = MockServer::start().await;
+        let query = make_query("example.com.", RecordType::A);
+        let response = make_response(
+            &query,
+            vec![a_record("example.com.", Ipv4Addr::new(1, 2, 3, 4))],
+            300,
+        );
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(response.to_bytes().unwrap()),
+                // No Content-Type header
+            )
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
+        let result = client.query(&query).await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("unexpected Content-Type"));
+    }
+
+    // --- Response query validation tests (item 3) ---
+
+    #[tokio::test]
+    async fn query_rejects_mismatched_response_name() {
+        let server = MockServer::start().await;
+        let query = make_query("example.com.", RecordType::A);
+
+        // Build a response for a different domain
+        let mut bad_response = Message::new();
+        bad_response.set_id(query.id());
+        bad_response.set_message_type(MessageType::Response);
+        bad_response.add_query(Query::query(
+            Name::from_str("evil.com.").unwrap(),
+            RecordType::A,
+        ));
+        bad_response.add_answer(a_record("evil.com.", Ipv4Addr::new(6, 6, 6, 6)));
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(bad_response.to_bytes().unwrap())
+                    .append_header("Content-Type", "application/dns-message"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
+        let result = client.query(&query).await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match request"));
+    }
+
+    #[tokio::test]
+    async fn query_rejects_mismatched_response_type() {
+        let server = MockServer::start().await;
+        let query = make_query("example.com.", RecordType::A);
+
+        // Build a response with the right name but wrong query type
+        let mut bad_response = Message::new();
+        bad_response.set_id(query.id());
+        bad_response.set_message_type(MessageType::Response);
+        bad_response.add_query(Query::query(
+            Name::from_str("example.com.").unwrap(),
+            RecordType::AAAA,
+        ));
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(bad_response.to_bytes().unwrap())
+                    .append_header("Content-Type", "application/dns-message"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
+        let result = client.query(&query).await;
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not match request"));
     }
 }
