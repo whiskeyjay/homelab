@@ -7,7 +7,8 @@ ARG TARGETPLATFORM
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     ca-certificates \
-    libssl3t64 && \
+    libssl3t64 \
+    bind9-dnsutils && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -33,6 +34,10 @@ ENV LISTEN_ADDR="0.0.0.0:5053" \
 # Expose DNS ports
 EXPOSE 5053/udp
 EXPOSE 5053/tcp
+
+# Health check: verify the proxy can resolve a query
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD dig @127.0.0.1 -p 5053 example.com +short +time=2 || exit 1
 
 # Use entrypoint script to handle env vars
 ENTRYPOINT ["/app/entrypoint.sh"]
