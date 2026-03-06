@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use hickory_proto::op::Message;
+use hickory_proto::rr::LowerName;
 use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use moka::future::Cache;
 use moka::Expiry;
@@ -7,7 +8,7 @@ use reqwest::Client;
 use std::time::Duration;
 
 // Cache key: (query name, query type, query class, dnssec_ok)
-type CacheKey = (String, u16, u16, bool);
+type CacheKey = (LowerName, u16, u16, bool);
 
 #[derive(Clone)]
 struct CachedResponse {
@@ -72,7 +73,7 @@ impl DohClient {
                     .map(|edns| edns.flags().dnssec_ok)
                     .unwrap_or(false);
                 let cache_key = (
-                    query.name().to_string().to_lowercase(),
+                    LowerName::from(query.name()),
                     query.query_type().into(),
                     query.query_class().into(),
                     dnssec_ok,
