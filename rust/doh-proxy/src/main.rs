@@ -36,18 +36,18 @@ async fn main() -> Result<()> {
         info!("Cache: disabled");
     }
 
+    // Parse listen address
+    let listen_addr = config.parse_listen_addr()?;
+
     // Create DoH client
     let doh_client = Arc::new(DohClient::new(
-        config.doh_servers.clone(),
+        config.doh_servers,
         config.timeout_secs,
         config.cache_size,
     )?);
 
     // Create DNS handler
     let handler = DnsHandler::new(doh_client);
-
-    // Parse listen address
-    let listen_addr = config.parse_listen_addr()?;
 
     // Create DNS server
     let mut server = ServerFuture::new(handler);

@@ -130,7 +130,7 @@ impl RequestHandler for DnsHandler {
                     response_msg.header().clone(),
                     response_msg.answers(),
                     response_msg.name_servers(),
-                    &[], // SOA records (typically empty for non-authoritative responses)
+                    &[], // SOA: authority/SOA records are already included in name_servers() above
                     response_msg.additionals(), // This includes EDNS OPT record with DNSSEC data
                 );
 

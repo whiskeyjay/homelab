@@ -64,40 +64,36 @@ impl DohClient {
 
     /// Query a DoH server with the DNS message (with caching)
     pub async fn query(&self, request: &Message) -> Result<Message> {
-        // If caching is disabled, directly query upstream
-        if self.cache.is_none() {
-            return self.query_upstream(request).await;
-        }
+        let cache = match (&self.cache, request.queries().first()) {
+            (Some(cache), Some(query)) => {
+                let dnssec_ok = request
+                    .extensions()
+                    .as_ref()
+                    .map(|edns| edns.flags().dnssec_ok)
+                    .unwrap_or(false);
+                let cache_key = (
+                    query.name().to_string().to_lowercase(),
+                    query.query_type().into(),
+                    query.query_class().into(),
+                    dnssec_ok,
+                );
 
-        // Extract query information for cache key
-        if let Some(query) = request.queries().first() {
-            let dnssec_ok = request
-                .extensions()
-                .as_ref()
-                .map(|edns| edns.flags().dnssec_ok)
-                .unwrap_or(false);
-            let cache_key = (
-                query.name().to_string().to_lowercase(),
-                query.query_type().into(),
-                query.query_class().into(),
-                dnssec_ok,
-            );
+                if let Some(cached) = cache.get(&cache_key).await {
+                    tracing::debug!("Cache HIT for {}", query.name());
+                    let mut response = cached.message.clone();
+                    response.set_id(request.id());
+                    return Ok(response);
+                }
 
-            // Check cache first (safe to unwrap since we checked is_none above)
-            let cache = self.cache.as_ref().unwrap();
-            if let Some(cached) = cache.get(&cache_key).await {
-                tracing::debug!("Cache HIT for {}", query.name());
-                let mut response = cached.message.clone();
-                response.set_id(request.id());
-                return Ok(response);
+                tracing::debug!("Cache MISS for {}", query.name());
+                Some((cache, cache_key, query.name().clone()))
             }
+            _ => None,
+        };
 
-            tracing::debug!("Cache MISS for {}", query.name());
+        let response = self.query_upstream(request).await?;
 
-            // Query upstream
-            let response = self.query_upstream(request).await?;
-
-            // Calculate TTL and cache the response
+        if let Some((cache, cache_key, query_name)) = cache {
             let ttl = self.calculate_ttl(&response);
             if ttl > 0 {
                 cache
@@ -109,14 +105,11 @@ impl DohClient {
                         },
                     )
                     .await;
-                tracing::debug!("Cached response for {} with TTL {}s", query.name(), ttl);
+                tracing::debug!("Cached response for {} with TTL {}s", query_name, ttl);
             }
-
-            Ok(response)
-        } else {
-            // No query in request, just forward
-            self.query_upstream(request).await
         }
+
+        Ok(response)
     }
 
     /// Calculate minimum TTL from all records in the response
@@ -385,10 +378,7 @@ mod tests {
         let query = make_query("cached.example.com.", RecordType::A);
         let response = make_response(
             &query,
-            vec![a_record(
-                "cached.example.com.",
-                Ipv4Addr::new(10, 0, 0, 1),
-            )],
+            vec![a_record("cached.example.com.", Ipv4Addr::new(10, 0, 0, 1))],
             300,
         );
 
@@ -422,10 +412,7 @@ mod tests {
         let query = make_query("nocache.example.com.", RecordType::A);
         let response = make_response(
             &query,
-            vec![a_record(
-                "nocache.example.com.",
-                Ipv4Addr::new(10, 0, 0, 2),
-            )],
+            vec![a_record("nocache.example.com.", Ipv4Addr::new(10, 0, 0, 2))],
             300,
         );
 
