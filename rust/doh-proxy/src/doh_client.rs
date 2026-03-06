@@ -168,6 +168,8 @@ impl DohClient {
     }
 
     async fn query_server(&self, server: &str, request_bytes: &[u8]) -> Result<Message> {
+        const MAX_DNS_RESPONSE_SIZE: u64 = 65535; // DNS protocol maximum
+
         // Use POST method with DNS wireformat in body
         let response = self
             .client
@@ -182,7 +184,25 @@ impl DohClient {
             return Err(anyhow!("DoH server returned status: {}", response.status()));
         }
 
+        if let Some(len) = response.content_length() {
+            if len > MAX_DNS_RESPONSE_SIZE {
+                return Err(anyhow!(
+                    "DoH response too large: {} bytes (max {})",
+                    len,
+                    MAX_DNS_RESPONSE_SIZE
+                ));
+            }
+        }
+
         let response_bytes = response.bytes().await?;
+        if response_bytes.len() as u64 > MAX_DNS_RESPONSE_SIZE {
+            return Err(anyhow!(
+                "DoH response too large: {} bytes (max {})",
+                response_bytes.len(),
+                MAX_DNS_RESPONSE_SIZE
+            ));
+        }
+
         let dns_response = Message::from_bytes(&response_bytes)?;
 
         Ok(dns_response)
@@ -430,5 +450,54 @@ mod tests {
 
         client.query(&query).await.unwrap();
         client.query(&query).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn query_rejects_oversized_response_with_content_length() {
+        let server = MockServer::start().await;
+        let body = vec![0u8; 65536]; // 1 byte over the 65535 limit
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(body)
+                    .append_header("Content-Type", "application/dns-message"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
+        let query = make_query("big.example.com.", RecordType::A);
+        let result = client.query(&query).await;
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn query_accepts_response_at_size_limit() {
+        let server = MockServer::start().await;
+        let query = make_query("ok.example.com.", RecordType::A);
+        let response = make_response(
+            &query,
+            vec![a_record("ok.example.com.", Ipv4Addr::new(1, 2, 3, 4))],
+            300,
+        );
+        let response_bytes = response.to_bytes().unwrap();
+        // Ensure our normal response is well under the limit
+        assert!(response_bytes.len() < 65535);
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(response_bytes)
+                    .append_header("Content-Type", "application/dns-message"),
+            )
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
+        let result = client.query(&query).await;
+        assert!(result.is_ok());
     }
 }
