@@ -6,7 +6,7 @@
 set -e
 
 # Version configuration
-VERSION="0.1.0"
+VERSION="0.1.1"
 MINOR_VERSION="0.1"
 IMAGE_NAME="whiskeyjay/doh-proxy"
 
