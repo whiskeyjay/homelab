@@ -57,43 +57,80 @@ Options:
 ### Examples
 
 **Use default settings (Cloudflare and Google):**
-```powershell
-.\target\release\doh-proxy.exe
+```bash
+doh-proxy
 ```
 
 **For Pi-hole with DNSSEC (recommended):**
-```powershell
-.\target\release\doh-proxy.exe -s https://9.9.9.9/dns-query
+```bash
+doh-proxy -s https://9.9.9.9/dns-query
 ```
 
 **Use custom DoH servers:**
-```powershell
-.\target\release\doh-proxy.exe -s https://9.9.9.9/dns-query -s https://94.140.14.14/dns-query
+```bash
+doh-proxy -s https://9.9.9.9/dns-query -s https://94.140.14.14/dns-query
 ```
 
 **Listen on localhost only:**
-```powershell
-.\target\release\doh-proxy.exe -l 127.0.0.1:53
+```bash
+doh-proxy -l 127.0.0.1:53
 ```
 
 **Use a different port:**
-```powershell
-.\target\release\doh-proxy.exe -l 0.0.0.0:5353
+```bash
+doh-proxy -l 0.0.0.0:5353
 ```
 
 **Listen on specific interface:**
-```powershell
-.\target\release\doh-proxy.exe -l 192.168.1.10:53
+```bash
+doh-proxy -l 192.168.1.10:53
 ```
 
 **Custom timeout:**
-```powershell
-.\target\release\doh-proxy.exe -t 10
+```bash
+doh-proxy -t 10
 ```
 
 ## Usage
 
-### Basic Usage (Windows)
+### Linux/macOS
+
+Run with sudo (required for port 53):
+
+```bash
+sudo ./target/release/doh-proxy
+
+# With custom options
+sudo ./target/release/doh-proxy \
+  -s https://dns.quad9.net/dns-query \
+  -t 10
+
+# Use Quad9 DNS
+sudo ./target/release/doh-proxy -s https://dns.quad9.net/dns-query
+
+# Use multiple custom servers with fallback
+sudo ./target/release/doh-proxy \
+  -s https://dns.quad9.net/dns-query \
+  -s https://dns.adguard.com/dns-query \
+  -s https://cloudflare-dns.com/dns-query
+
+# Run on alternative port (no sudo required)
+./target/release/doh-proxy -l 0.0.0.0:5353
+
+# Disable caching (not recommended)
+sudo ./target/release/doh-proxy -c 0
+
+# Enable verbose logging to see cache performance
+sudo ./target/release/doh-proxy -v
+
+# All options together
+sudo ./target/release/doh-proxy \
+  -l 0.0.0.0:53 \
+  -s https://dns.quad9.net/dns-query \
+  -t 10
+```
+
+### Windows
 
 Run as Administrator (required for port 53):
 
@@ -135,24 +172,16 @@ Run as Administrator (required for port 53):
   -t 10
 ```
 
-### Linux/macOS
-
-Run with sudo (required for port 53):
-
-```bash
-sudo ./target/release/doh-proxy
-
-# With custom options
-sudo ./target/release/doh-proxy \
-  -s https://dns.quad9.net/dns-query \
-  -t 10
-```
-
 ### Testing
 
 Once running, you can test the proxy with standard DNS tools:
 
-**Using nslookup (localhost):**
+**Using dig (Linux/macOS):**
+```bash
+dig @127.0.0.1 example.com
+```
+
+**Using nslookup:**
 ```bash
 nslookup example.com 127.0.0.1
 ```
@@ -162,18 +191,9 @@ nslookup example.com 127.0.0.1
 nslookup example.com 192.168.1.10
 ```
 
-**Using dig:**
-```bash
-dig @127.0.0.1 example.com
-```
-
 **Using PowerShell (Windows):**
 ```powershell
-# Local
 Resolve-DnsName example.com -Server 127.0.0.1
-
-# From network
-Resolve-DnsName example.com -Server 192.168.1.10
 ```
 
 ## How It Works
@@ -247,8 +267,8 @@ With caching enabled (default), the proxy delivers excellent performance:
 
 Use the `-v` flag to see cache hits/misses in real-time:
 
-```powershell
-.\target\release\doh-proxy.exe -v
+```bash
+doh-proxy -v
 ```
 
 You'll see log entries like:
@@ -284,13 +304,19 @@ This is the most common issue. Port 53 is typically in use by:
 **Solutions:**
 
 **Option 1: Use a different port (easiest)**
-```powershell
-# No administrator rights needed
-doh-proxy.exe -l 127.0.0.1:5353
+```bash
+# No root/admin rights needed
+doh-proxy -l 127.0.0.1:5353
 ```
 Then configure your system to use `127.0.0.1:5353` as DNS server.
 
 **Option 2: Stop the conflicting service**
+
+*Linux:*
+```bash
+sudo systemctl stop systemd-resolved
+sudo systemctl disable systemd-resolved
+```
 
 *Windows (requires Administrator):*
 ```powershell
@@ -299,12 +325,6 @@ Stop-Service -Name "Dnscache"
 
 # Permanent (not recommended)
 Set-Service -Name "Dnscache" -StartupType Disabled
-```
-
-*Linux:*
-```bash
-sudo systemctl stop systemd-resolved
-sudo systemctl disable systemd-resolved
 ```
 
 **Option 3: Configure the conflicting service to not use port 53**
@@ -322,7 +342,7 @@ Binding to port 53 requires elevated privileges:
 If queries are failing:
 - Check your internet connection
 - Verify the DoH server URLs are correct and accessible
-- Try increasing timeout: `doh-proxy.exe -t 10`
+- Try increasing timeout: `doh-proxy -t 10`
 - Check firewall settings (ensure HTTPS/443 outbound is allowed)
 
 ## License
