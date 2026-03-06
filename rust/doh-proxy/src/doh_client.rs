@@ -94,8 +94,11 @@ impl DohClient {
         let response = self.query_upstream(request).await?;
 
         if let Some((cache, cache_key, query_name)) = cache {
+            let rcode = response.response_code();
+            let cacheable = rcode == hickory_proto::op::ResponseCode::NoError
+                || rcode == hickory_proto::op::ResponseCode::NXDomain;
             let ttl = self.calculate_ttl(&response);
-            if ttl > 0 {
+            if cacheable && ttl > 0 {
                 cache
                     .insert(
                         cache_key,
@@ -116,12 +119,13 @@ impl DohClient {
     fn calculate_ttl(&self, response: &Message) -> u32 {
         let mut min_ttl = u32::MAX;
 
-        // Check all record sections
+        // Check answer and authority sections, skipping additionals
+        // (additionals can contain OPT pseudo-records whose TTL field
+        // is not a cache duration)
         for record in response
             .answers()
             .iter()
             .chain(response.name_servers().iter())
-            .chain(response.additionals().iter())
         {
             min_ttl = min_ttl.min(record.ttl());
         }
@@ -472,6 +476,58 @@ mod tests {
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("too large"));
+    }
+
+    #[tokio::test]
+    async fn query_does_not_cache_servfail() {
+        let server = MockServer::start().await;
+        let query = make_query("fail.example.com.", RecordType::A);
+
+        // Build a SERVFAIL response with no records
+        let mut servfail_resp = Message::new();
+        servfail_resp.set_id(query.id());
+        servfail_resp.set_message_type(MessageType::Response);
+        servfail_resp.set_response_code(hickory_proto::op::ResponseCode::ServFail);
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_bytes(servfail_resp.to_bytes().unwrap())
+                    .append_header("Content-Type", "application/dns-message"),
+            )
+            .expect(2) // Both queries must hit upstream (nothing cached)
+            .mount(&server)
+            .await;
+
+        let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 100).unwrap();
+
+        let r1 = client.query(&query).await.unwrap();
+        assert_eq!(r1.response_code(), hickory_proto::op::ResponseCode::ServFail);
+
+        // Second identical query should NOT be served from cache
+        let r2 = client.query(&query).await.unwrap();
+        assert_eq!(r2.response_code(), hickory_proto::op::ResponseCode::ServFail);
+    }
+
+    #[test]
+    fn calculate_ttl_ignores_additional_section() {
+        let client = DohClient::new(vec!["https://dummy".into()], 5, 0).unwrap();
+
+        let mut msg = Message::new();
+        msg.add_answer(Record::from_rdata(
+            Name::from_str("a.example.").unwrap(),
+            300,
+            RData::A(A(Ipv4Addr::LOCALHOST)),
+        ));
+        // Simulate an additional record with a very low TTL (like an OPT pseudo-record)
+        msg.add_additional(Record::from_rdata(
+            Name::from_str(".").unwrap(),
+            0,
+            RData::A(A(Ipv4Addr::LOCALHOST)),
+        ));
+
+        // TTL should come from the answer section only, not the additional
+        assert_eq!(client.calculate_ttl(&msg), 300);
     }
 
     #[tokio::test]

@@ -36,8 +36,9 @@ async fn main() -> Result<()> {
         info!("Cache: disabled");
     }
 
-    // Parse listen address
+    // Validate configuration
     let listen_addr = config.parse_listen_addr()?;
+    config.validate_doh_servers()?;
 
     // Create DoH client
     let doh_client = Arc::new(DohClient::new(

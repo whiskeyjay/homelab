@@ -28,7 +28,6 @@ winres = "0.1"
 
 [package.metadata.winres]
 ProductName = "DoH Proxy"
-ProductVersion = "0.1.0"
 FileDescription = "DNS over HTTPS Proxy, a replacement for cloudflared proxy-dns command"
 CompanyName = "Jay Wang"
 OriginalFilename = "doh-proxy.exe"

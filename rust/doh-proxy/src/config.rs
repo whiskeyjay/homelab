@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use clap::Parser;
 use std::net::SocketAddr;
 
@@ -35,5 +35,21 @@ pub struct Config {
 impl Config {
     pub fn parse_listen_addr(&self) -> Result<SocketAddr> {
         Ok(self.listen_addr.parse()?)
+    }
+
+    /// Validate that all DoH server URLs use HTTPS and the list is non-empty.
+    pub fn validate_doh_servers(&self) -> Result<()> {
+        if self.doh_servers.is_empty() {
+            bail!("No DoH upstream servers provided. Use -s to specify at least one.");
+        }
+        for url in &self.doh_servers {
+            if !url.to_lowercase().starts_with("https://") {
+                bail!(
+                    "DoH server URL must use HTTPS: {url}\n\
+                     Hint: DNS-over-HTTPS requires TLS. Use a URL like https://1.1.1.1/dns-query"
+                );
+            }
+        }
+        Ok(())
     }
 }
