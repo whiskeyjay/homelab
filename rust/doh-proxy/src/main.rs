@@ -84,15 +84,47 @@ async fn main() -> Result<()> {
 
     info!("DoH Proxy is ready to serve DNS queries");
 
-    // Run the server
-    match server.block_until_done().await {
-        Ok(_) => {
-            info!("Server shutdown gracefully");
-            Ok(())
+    // Wait for shutdown signal or server completion
+    tokio::select! {
+        result = server.block_until_done() => {
+            match result {
+                Ok(_) => info!("Server shutdown gracefully"),
+                Err(e) => {
+                    error!("Server error: {}", e);
+                    return Err(e.into());
+                }
+            }
         }
-        Err(e) => {
-            error!("Server error: {}", e);
-            Err(e.into())
+        _ = shutdown_signal() => {
+            info!("Received shutdown signal, shutting down...");
+            if let Err(e) = server.shutdown_gracefully().await {
+                error!("Error during shutdown: {}", e);
+            } else {
+                info!("Server shutdown gracefully");
+            }
         }
+    }
+
+    Ok(())
+}
+
+/// Wait for SIGINT (Ctrl+C) or SIGTERM (docker stop / kill)
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+
+    #[cfg(unix)]
+    {
+        let mut sigterm =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await.ok();
     }
 }
