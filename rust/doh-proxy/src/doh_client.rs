@@ -6,8 +6,8 @@ use moka::Expiry;
 use reqwest::Client;
 use std::time::Duration;
 
-// Cache key: (query name, query type)
-type CacheKey = (String, u16);
+// Cache key: (query name, query type, query class)
+type CacheKey = (String, u16, u16);
 
 #[derive(Clone)]
 struct CachedResponse {
@@ -74,6 +74,7 @@ impl DohClient {
             let cache_key = (
                 query.name().to_string().to_lowercase(),
                 query.query_type().into(),
+                query.query_class().into(),
             );
 
             // Check cache first (safe to unwrap since we checked is_none above)
