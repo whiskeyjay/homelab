@@ -36,7 +36,6 @@ esac
 WORKSPACE_ROOT="$SCRIPT_DIR/../.."
 cd "$WORKSPACE_ROOT"
 
-cargo clean
 cargo build --release --target "$RUST_TARGET"
 
 # Temporary directory for build
