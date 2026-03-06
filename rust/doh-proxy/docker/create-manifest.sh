@@ -13,31 +13,20 @@ IMAGE_NAME="whiskeyjay/doh-proxy"
 echo "Creating multi-arch manifests for doh-proxy..."
 echo ""
 
-# Remove old manifests if they exist (they might be cached locally)
-docker manifest rm $IMAGE_NAME:latest 2>/dev/null || true
-docker manifest rm $IMAGE_NAME:$VERSION 2>/dev/null || true
-docker manifest rm $IMAGE_NAME:$MINOR_VERSION 2>/dev/null || true
+echo "Creating and pushing manifest for :latest"
+docker buildx imagetools create -t $IMAGE_NAME:latest \
+  $IMAGE_NAME:$VERSION-amd64 \
+  $IMAGE_NAME:$VERSION-arm64
 
-echo "Creating manifest for :latest"
-docker manifest create $IMAGE_NAME:latest \
-  --amend $IMAGE_NAME:$VERSION-amd64 \
-  --amend $IMAGE_NAME:$VERSION-arm64
+echo "Creating and pushing manifest for :$VERSION"
+docker buildx imagetools create -t $IMAGE_NAME:$VERSION \
+  $IMAGE_NAME:$VERSION-amd64 \
+  $IMAGE_NAME:$VERSION-arm64
 
-echo "Creating manifest for :$VERSION"
-docker manifest create $IMAGE_NAME:$VERSION \
-  --amend $IMAGE_NAME:$VERSION-amd64 \
-  --amend $IMAGE_NAME:$VERSION-arm64
-
-echo "Creating manifest for :$MINOR_VERSION"
-docker manifest create $IMAGE_NAME:$MINOR_VERSION \
-  --amend $IMAGE_NAME:$VERSION-amd64 \
-  --amend $IMAGE_NAME:$VERSION-arm64
-
-echo ""
-echo "Pushing manifests..."
-docker manifest push $IMAGE_NAME:latest
-docker manifest push $IMAGE_NAME:$VERSION
-docker manifest push $IMAGE_NAME:$MINOR_VERSION
+echo "Creating and pushing manifest for :$MINOR_VERSION"
+docker buildx imagetools create -t $IMAGE_NAME:$MINOR_VERSION \
+  $IMAGE_NAME:$VERSION-amd64 \
+  $IMAGE_NAME:$VERSION-arm64
 
 echo ""
 echo "============================================"
