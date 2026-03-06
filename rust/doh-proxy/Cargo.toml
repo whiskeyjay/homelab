@@ -21,6 +21,9 @@ msvc_spectre_libs = { version = "0.1", features = [
     "error",
 ] } # On Windows, makes the project to link with the Spectre-mitigated CRT and libs.
 
+[dev-dependencies]
+wiremock = "0.6"
+
 [build-dependencies]
 winres = "0.1"
 
