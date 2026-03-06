@@ -19,6 +19,10 @@ COPY ./bin/${TARGETPLATFORM}/doh-proxy /app/doh-proxy
 COPY ./entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh /app/doh-proxy
 
+# Create non-root user
+RUN useradd -r -s /bin/false dohproxy
+USER dohproxy
+
 # Environment variables with defaults
 ENV LISTEN_ADDR="0.0.0.0:5053" \
     DOH_SERVERS="https://1.1.1.1/dns-query,https://8.8.8.8/dns-query" \

@@ -2,13 +2,13 @@
 
 # You need to be logged in to Docker Hub before running this script.
 
-# Version configuration
-VERSION="0.1.1"
-MINOR_VERSION="0.1"
+# Version configuration - read from Cargo.toml
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+VERSION=$(grep '^version' "$SCRIPT_DIR/../Cargo.toml" | head -1 | sed 's/.*"\(.*\)"/\1/')
+MINOR_VERSION=$(echo "$VERSION" | sed 's/\.[^.]*$//')
 IMAGE_NAME="whiskeyjay/doh-proxy"
 
-# Script directory
-SCRIPT_DIR=$(dirname "$(realpath "$0")")
+echo "Version: $VERSION (minor: $MINOR_VERSION)"
 
 # Auto-detect CPU architecture
 ARCH=$(uname -m)
