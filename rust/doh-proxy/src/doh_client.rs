@@ -5,6 +5,7 @@ use hickory_proto::serialize::binary::{BinDecodable, BinEncodable};
 use moka::future::Cache;
 use moka::Expiry;
 use reqwest::Client;
+use std::sync::Arc;
 use std::time::Duration;
 
 // Cache key: (query name, query type, query class, dnssec_ok)
@@ -12,7 +13,7 @@ type CacheKey = (LowerName, u16, u16, bool);
 
 #[derive(Clone)]
 struct CachedResponse {
-    message: Message,
+    message: Arc<Message>,
     ttl: Duration,
 }
 
@@ -81,7 +82,7 @@ impl DohClient {
 
                 if let Some(cached) = cache.get(&cache_key).await {
                     tracing::debug!("Cache HIT for {}", query.name());
-                    let mut response = cached.message.clone();
+                    let mut response = (*cached.message).clone();
                     response.set_id(request.id());
                     return Ok(response);
                 }
@@ -118,7 +119,7 @@ impl DohClient {
                     .insert(
                         cache_key,
                         CachedResponse {
-                            message: response.clone(),
+                            message: Arc::new(response.clone()),
                             ttl: Duration::from_secs(ttl as u64),
                         },
                     )
