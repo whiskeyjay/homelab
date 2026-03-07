@@ -53,34 +53,17 @@ cp "$SCRIPT_DIR/entrypoint.sh" "$BUILD_DIR"
 cd "$BUILD_DIR"
 
 # Build and push with platform-specific tags
-docker build \
+docker buildx build \
+    --platform $DOCKER_PLATFORM \
     -t $IMAGE_NAME:$VERSION-$DOCKER_ARCH \
     -t $IMAGE_NAME:$MINOR_VERSION-$DOCKER_ARCH \
+    --push \
     .
-
-docker push $IMAGE_NAME:$VERSION-$DOCKER_ARCH
-docker push $IMAGE_NAME:$MINOR_VERSION-$DOCKER_ARCH
 
 echo ""
 echo "============================================"
 echo "Image pushed: $IMAGE_NAME:$VERSION-$DOCKER_ARCH"
 echo "============================================"
 echo ""
-echo "After building on BOTH architectures, run this command to create the multi-arch manifest:"
-echo ""
-echo "docker manifest create $IMAGE_NAME:latest \\"
-echo "  $IMAGE_NAME:$VERSION-amd64 \\"
-echo "  $IMAGE_NAME:$VERSION-arm64"
-echo ""
-echo "docker manifest create $IMAGE_NAME:$VERSION \\"
-echo "  $IMAGE_NAME:$VERSION-amd64 \\"
-echo "  $IMAGE_NAME:$VERSION-arm64"
-echo ""
-echo "docker manifest create $IMAGE_NAME:$MINOR_VERSION \\"
-echo "  $IMAGE_NAME:$VERSION-amd64 \\"
-echo "  $IMAGE_NAME:$VERSION-arm64"
-echo ""
-echo "docker manifest push $IMAGE_NAME:latest"
-echo "docker manifest push $IMAGE_NAME:$VERSION"
-echo "docker manifest push $IMAGE_NAME:$MINOR_VERSION"
+echo "After building on BOTH architectures, run create-manifest.sh to create the multi-arch manifest."
 echo ""
