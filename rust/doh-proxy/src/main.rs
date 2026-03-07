@@ -47,6 +47,21 @@ async fn main() -> Result<()> {
         config.cache_size,
     )?);
 
+    // Spawn periodic cache stats logger
+    if config.cache_size > 0 {
+        let cache_client = Arc::clone(&doh_client);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
+            interval.tick().await; // skip immediate first tick
+            loop {
+                interval.tick().await;
+                if let Some(count) = cache_client.cache_entry_count() {
+                    info!("Cache entries: {}", count);
+                }
+            }
+        });
+    }
+
     // Create DNS handler
     let handler = DnsHandler::new(doh_client);
 

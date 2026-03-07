@@ -38,6 +38,10 @@ pub struct DohClient {
 }
 
 impl DohClient {
+    pub fn cache_entry_count(&self) -> Option<u64> {
+        self.cache.as_ref().map(|c| c.entry_count())
+    }
+
     pub fn new(servers: Vec<String>, timeout_secs: u64, cache_size: u64) -> Result<Self> {
         let client = Client::builder()
             .use_native_tls()
