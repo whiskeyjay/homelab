@@ -2,13 +2,11 @@
 
 # You need to be logged in to Docker Hub before running this script.
 
-# Version configuration
-VERSION="0.1.4"
-MINOR_VERSION="0.1"
-IMAGE_NAME="whiskeyjay/ptn2influx"
-
-# Script directory
+# Version is sourced from Cargo.toml
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
+VERSION=$(grep '^version' "$SCRIPT_DIR/../Cargo.toml" | head -1 | cut -d'"' -f2)
+MINOR_VERSION=$(echo "$VERSION" | cut -d. -f1,2)
+IMAGE_NAME="whiskeyjay/ptn2influx"
 
 # Auto-detect CPU architecture
 ARCH=$(uname -m)
@@ -37,6 +35,8 @@ cargo build --release --target "$RUST_TARGET"
 
 # Temporary directory for build
 BUILD_DIR="$SCRIPT_DIR/.temp"
+cleanup() { rm -rf "$BUILD_DIR"; }
+trap cleanup EXIT
 
 if [ -d "$BUILD_DIR" ]; then
     rm -rf "$BUILD_DIR"

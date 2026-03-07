@@ -1,113 +1,92 @@
-use anyhow::{Context, Result};
-use crossbeam::channel::{Receiver, RecvTimeoutError};
+use anyhow::Result;
 use log::{error, info};
-use std::{thread, time::Instant};
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
 
 const MAX_SEND_DELAY_SEC: u64 = 30;
 const SEND_BUFFER_SIZE: usize = 0x100000; // 1 MB
+const CHANNEL_CAPACITY: usize = 10_000;
 
-#[derive(Debug)]
 pub(crate) struct InfluxDBWriter {
     url: String,
     org: String,
     bucket: String,
     token: String,
-    sender: crossbeam::channel::Sender<String>,
-    receiver: crossbeam::channel::Receiver<String>,
 }
 
 impl InfluxDBWriter {
     pub(crate) fn new(url: &str, org: &str, bucket: &str, token: &str) -> Self {
-        let (sender, receiver) = crossbeam::channel::unbounded();
-
         InfluxDBWriter {
             url: url.to_string(),
             org: org.to_string(),
             token: token.to_string(),
             bucket: bucket.to_string(),
-            sender,
-            receiver,
         }
     }
 
-    pub(crate) fn get_sender(&self) -> crossbeam::channel::Sender<String> {
-        self.sender.clone()
-    }
+    pub(crate) fn run(self) -> (mpsc::Sender<String>, tokio::task::JoinHandle<()>) {
+        let (sender, receiver) = mpsc::channel(CHANNEL_CAPACITY);
 
-    pub(crate) fn run(&self) -> Result<()> {
-        let url = self.url.clone();
-        let org = self.org.clone();
-        let bucket = self.bucket.clone();
-        let token = self.token.clone();
-        let receiver = self.receiver.clone();
+        info!("Starting InfluxDB writer task");
 
-        info!("Starting InfluxDB writer thread");
+        let handle = tokio::spawn(async move {
+            Self::send_loop(receiver, self.url, self.org, &self.bucket, self.token).await;
+        });
 
-        thread::Builder::new()
-            .name("influxdb_writer".to_string())
-            .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .context("Failed to create tokio runtime")
-                {
-                    Ok(runtime) => runtime,
-                    Err(e) => {
-                        error!("Failed to create tokio runtime: {}", e);
-                        return;
-                    }
-                };
-
-                runtime.block_on(Self::send_loop(receiver, url, org, &bucket, token));
-            })
-            .context("Failed to spawn InfluxDB writer thread")?;
-
-        Ok(())
+        (sender, handle)
     }
 
     async fn send_loop(
-        receiver: Receiver<String>,
+        mut receiver: mpsc::Receiver<String>,
         url: String,
         org: String,
         bucket: &str,
         token: String,
     ) {
-        info!("InfluxDB writer thread started");
+        info!("InfluxDB writer task started");
 
         let client = influxdb2::Client::new(url, org.clone(), token);
         let mut last_send_time = Instant::now();
         let mut send_buffer = String::with_capacity(SEND_BUFFER_SIZE);
 
         loop {
-            match receiver.recv_timeout(std::time::Duration::from_secs(MAX_SEND_DELAY_SEC)) {
-                Ok(data_point) => {
-                    send_buffer.push_str(&format!("{}\n", data_point));
+            let remaining = Duration::from_secs(MAX_SEND_DELAY_SEC)
+                .saturating_sub(last_send_time.elapsed());
 
-                    if send_buffer.len() >= SEND_BUFFER_SIZE
-                        || last_send_time.elapsed().as_secs() >= MAX_SEND_DELAY_SEC
-                    {
-                        // Max buffer size reached or max send delay reached, send the data points
-                        send_buffer = Self::send_data_points(&client, &org, bucket, send_buffer)
-                            .await
-                            .unwrap_or(String::with_capacity(SEND_BUFFER_SIZE));
-                        last_send_time = Instant::now();
+            tokio::select! {
+                result = receiver.recv() => {
+                    match result {
+                        Some(data_point) => {
+                            send_buffer.push_str(&data_point);
+                            send_buffer.push('\n');
+
+                            if send_buffer.len() >= SEND_BUFFER_SIZE
+                                || last_send_time.elapsed().as_secs() >= MAX_SEND_DELAY_SEC
+                            {
+                                send_buffer = Self::send_data_points(&client, &org, bucket, send_buffer)
+                                    .await
+                                    .unwrap_or_else(|_| String::with_capacity(SEND_BUFFER_SIZE));
+                                last_send_time = Instant::now();
+                            }
+                        }
+                        None => {
+                            // Channel closed, flush remaining buffer and exit
+                            info!("Channel closed, flushing remaining buffer");
+                            let _ = Self::send_data_points(&client, &org, bucket, send_buffer).await;
+                            break;
+                        }
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    // Maximum delay reached, send any buffered data points
+                _ = tokio::time::sleep(remaining) => {
                     send_buffer = Self::send_data_points(&client, &org, bucket, send_buffer)
                         .await
-                        .unwrap_or(String::with_capacity(SEND_BUFFER_SIZE));
+                        .unwrap_or_else(|_| String::with_capacity(SEND_BUFFER_SIZE));
                     last_send_time = Instant::now();
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    error!("Receiver disconnected, exiting");
-                    break;
                 }
             }
         }
 
-        info!("InfluxDB writer thread exiting");
+        info!("InfluxDB writer task exiting");
     }
 
     async fn send_data_points(

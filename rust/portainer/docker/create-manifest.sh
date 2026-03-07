@@ -5,9 +5,10 @@
 
 set -e
 
-# Version configuration
-VERSION="0.1.4"
-MINOR_VERSION="0.1"
+# Version is sourced from Cargo.toml
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+VERSION=$(grep '^version' "$SCRIPT_DIR/../Cargo.toml" | head -1 | cut -d'"' -f2)
+MINOR_VERSION=$(echo "$VERSION" | cut -d. -f1,2)
 IMAGE_NAME="whiskeyjay/ptn2influx"
 
 echo "Creating multi-arch manifests for ptn2influx..."

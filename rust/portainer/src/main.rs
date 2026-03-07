@@ -4,7 +4,6 @@ mod models;
 use crate::models::*;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use crossbeam::channel::Sender;
 use futures_util::future::join_all;
 use influxdb_writer::InfluxDBWriter;
 use log::{error, info};
@@ -15,7 +14,8 @@ use log4rs::{
 };
 use reqwest::Client as HttpClient;
 use std::time::{Duration, Instant};
-use std::{env, fs, thread};
+use std::{env, fs};
+use tokio::sync::mpsc;
 
 struct AppConfig {
     portainer_url: String,
@@ -29,23 +29,49 @@ struct AppConfig {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = load_config()?;
-
     // Initialize logging
     init_logging().context("Failed to initialize logging")?;
+
+    let config = load_config()?;
 
     info!("Starting Portainer metrics to InfluxDB exporter...");
 
     // Initialize clients
     let http_client = HttpClient::new();
 
-    let data_sender = create_influxdb_writer(
+    let (data_sender, writer_handle) = create_influxdb_writer(
         &config.influxdb_url,
         &config.influxdb_org,
         &config.influxdb_bucket,
         &config.influxdb_token,
-    )?;
+    );
 
+    // Run poll loop until shutdown signal
+    tokio::select! {
+        _ = poll_loop(&http_client, &data_sender, &config) => {}
+        _ = shutdown_signal() => {
+            info!("Received shutdown signal");
+        }
+    }
+
+    // Drop sender to signal writer to flush remaining data and exit
+    info!("Shutting down, flushing remaining data...");
+    drop(data_sender);
+
+    // Wait for writer to finish flushing
+    if let Err(e) = writer_handle.await {
+        error!("Writer task error: {:?}", e);
+    }
+
+    info!("Shutdown complete");
+    Ok(())
+}
+
+async fn poll_loop(
+    http_client: &HttpClient,
+    data_sender: &mpsc::Sender<String>,
+    config: &AppConfig,
+) {
     loop {
         info!(
             "Fetching endpoints from Portainer endpoint \"{}\"...",
@@ -53,30 +79,52 @@ async fn main() -> Result<()> {
         );
 
         let last_poll = Instant::now();
-        let endpoints = get_endpoints(&http_client, &config)
+
+        match get_endpoints(http_client, config).await {
+            Ok(endpoints) => {
+                info!("Found {} endpoints.", endpoints.len());
+
+                let futures: Vec<_> = endpoints
+                    .iter()
+                    .map(|endpoint| {
+                        process_endpoint(http_client, data_sender, config, endpoint)
+                    })
+                    .collect();
+
+                for result in join_all(futures).await {
+                    if let Err(e) = result {
+                        error!("Error processing endpoint: {:?}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to get endpoints, will retry: {:?}", e);
+            }
+        }
+
+        if let Some(sleep_time) = config.poll_interval.checked_sub(last_poll.elapsed()) {
+            info!("Waiting {} seconds for next poll...", sleep_time.as_secs());
+            tokio::time::sleep(sleep_time).await;
+        }
+    }
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("Failed to register SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        tokio::signal::ctrl_c()
             .await
-            .context("Failed to get endpoints")?;
-
-        info!("Found {} endpoints.", endpoints.len());
-
-        let futures: Vec<_> = endpoints
-            .iter()
-            .map(|endpoint| process_endpoint(&http_client, &data_sender, &config, endpoint))
-            .collect();
-
-        for result in join_all(futures).await {
-            if let Err(e) = result {
-                error!("Error processing endpoint: {:?}", e);
-            }
-        }
-
-        match config.poll_interval.checked_sub(last_poll.elapsed()) {
-            Some(sleep_time) => {
-                info!("Waiting {} seconds for next poll...", sleep_time.as_secs());
-                thread::sleep(sleep_time);
-            }
-            None => {}
-        }
+            .expect("Failed to register ctrl+c handler");
     }
 }
 
@@ -150,11 +198,9 @@ fn create_influxdb_writer(
     influxdb_org: &str,
     influxdb_bucket: &str,
     influxdb_token: &str,
-) -> Result<Sender<String>> {
+) -> (mpsc::Sender<String>, tokio::task::JoinHandle<()>) {
     let writer = InfluxDBWriter::new(influxdb_url, influxdb_org, influxdb_bucket, influxdb_token);
-    writer.run()?;
-
-    Ok(writer.get_sender())
+    writer.run()
 }
 
 async fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<Endpoint>> {
@@ -166,6 +212,10 @@ async fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<En
         .await
         .context("Failed to get endpoints")?;
 
+    if !response.status().is_success() {
+        anyhow::bail!("Endpoints API returned status {}", response.status());
+    }
+
     let endpoints: Vec<Endpoint> = response
         .json()
         .await
@@ -176,7 +226,7 @@ async fn get_endpoints(client: &HttpClient, config: &AppConfig) -> Result<Vec<En
 
 async fn process_endpoint(
     http_client: &HttpClient,
-    data_sender: &Sender<String>,
+    data_sender: &mpsc::Sender<String>,
     config: &AppConfig,
     endpoint: &Endpoint,
 ) -> Result<()> {
@@ -193,7 +243,7 @@ async fn process_endpoint(
     let futures = containers.iter().map(|container| {
         let container_name = container
             .names
-            .get(0)
+            .first()
             .map(|s| s.trim_start_matches('/'))
             .unwrap_or("unknown");
 
@@ -238,6 +288,10 @@ async fn get_containers(
         .await
         .context("Failed to get containers")?;
 
+    if !response.status().is_success() {
+        anyhow::bail!("Containers API returned status {}", response.status());
+    }
+
     let containers: Vec<Container> = response
         .json()
         .await
@@ -247,7 +301,7 @@ async fn get_containers(
 
 async fn process_container(
     http_client: &HttpClient,
-    data_sender: &Sender<String>,
+    data_sender: &mpsc::Sender<String>,
     config: &AppConfig,
     endpoint: &Endpoint,
     container: &Container,
@@ -309,7 +363,7 @@ async fn process_container(
 
     // Process Metrics
     if let Some(pids_current) = stats.pids_stats.get("current") {
-        main_stats.push_str(&format!(",pids_current={}i ", *pids_current as i64));
+        main_stats.push_str(&format!(",pids_current={}i", *pids_current as i64));
     }
 
     // Timestamp
@@ -325,6 +379,7 @@ async fn process_container(
     // Write main stats
     data_sender
         .send(main_stats)
+        .await
         .context("Failed to send main data point to the InfluxDB writer")?;
 
     // Network Metrics (per interface)
@@ -352,6 +407,7 @@ async fn process_container(
 
             data_sender
                 .send(data_point)
+                .await
                 .context("Failed to send network data point to the InfluxDB writer")?;
         }
     }
@@ -379,6 +435,7 @@ async fn process_container(
 
             data_sender
                 .send(data_point)
+                .await
                 .context("Failed to send blkio data point to the InfluxDB writer")?;
         }
     }
@@ -408,6 +465,10 @@ async fn get_container_stats(
         .await
         .context("Failed to get container stats")?;
 
+    if !response.status().is_success() {
+        anyhow::bail!("Container stats API returned status {}", response.status());
+    }
+
     let stats: Stats = response
         .json()
         .await
@@ -416,14 +477,16 @@ async fn get_container_stats(
 }
 
 fn calculate_cpu_percent(stats: &Stats) -> f64 {
-    let cpu_delta = stats.cpu_stats.cpu_usage.total_usage as i64
-        - stats.precpu_stats.cpu_usage.total_usage as i64;
-    let system_delta = stats.cpu_stats.system_cpu_usage.unwrap_or(0) as i64
-        - stats.precpu_stats.system_cpu_usage.unwrap_or(0) as i64;
+    let cpu_current = stats.cpu_stats.cpu_usage.total_usage;
+    let cpu_previous = stats.precpu_stats.cpu_usage.total_usage;
+    let sys_current = stats.cpu_stats.system_cpu_usage.unwrap_or(0);
+    let sys_previous = stats.precpu_stats.system_cpu_usage.unwrap_or(0);
 
-    if system_delta > 0 && cpu_delta > 0 {
+    if cpu_current >= cpu_previous && sys_current > sys_previous {
+        let cpu_delta = (cpu_current - cpu_previous) as f64;
+        let system_delta = (sys_current - sys_previous) as f64;
         let num_cpus = stats.cpu_stats.online_cpus as f64;
-        ((cpu_delta as f64 / system_delta as f64) * num_cpus * 100.0) as f64
+        (cpu_delta / system_delta) * num_cpus * 100.0
     } else {
         0.0
     }

@@ -12,4 +12,4 @@ if [ -d /run/secrets ]; then
 fi
 
 # Execute the main application as the appuser
-exec su -s /bin/sh appuser -c "/app/ptn2influx"
+exec setpriv --reuid=appuser --regid=appgroup --init-groups /app/ptn2influx
