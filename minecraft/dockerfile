@@ -1,4 +1,4 @@
-FROM amazoncorretto:21
+FROM amazoncorretto:26
 
 EXPOSE 25565/tcp
 WORKDIR /minecraft
@@ -7,9 +7,9 @@ WORKDIR /minecraft
 RUN yum install -y udev wget && yum clean all
 
 # Download the Minecraft server jar
-RUN wget -O server.jar https://piston-data.mojang.com/v1/objects/64bb6d763bed0a9f1d632ec347938594144943ed/server.jar
+RUN wget -O server.jar https://piston-data.mojang.com/v1/objects/3872a7f07a1a595e651aef8b058dfc2bb3772f46/server.jar
 
 # Accept the EULA
 RUN echo "eula=true" > eula.txt
 
-ENTRYPOINT cd $MC_SVR_PATH && cp /minecraft/*.* $MC_SVR_PATH && java -Xmx$MC_MEM_MAX -Xms$MC_MEM_MIN -jar ./server.jar --nogui
+ENTRYPOINT ["sh", "-c", "cd $MC_SVR_PATH && cp /minecraft/*.* $MC_SVR_PATH && java --enable-native-access=ALL-UNNAMED -Xmx$MC_MEM_MAX -Xms$MC_MEM_MIN -jar ./server.jar nogui"]
