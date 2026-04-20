@@ -1,13 +1,22 @@
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::DefaultTerminal;
-use std::collections::BTreeMap;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const AUTO_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
 
 use crate::mmcli::{self, ModemInfo, SmsMessage};
 use crate::ui;
+
+/// Messages sent from background threads back to the main UI thread.
+enum BgResult {
+    Messages(Result<Vec<SmsMessage>>),
+    SendOk(String),
+    SendErr(String),
+    DeleteConvo { number: String, errors: usize },
+    DeleteMsg { index: u32, result: Result<()> },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -98,6 +107,9 @@ pub struct App {
     pub new_message_dialog: Option<NewMessageDialog>,
     pub modem_picker: Option<ModemPicker>,
     pub last_refresh: Instant,
+    bg_rx: mpsc::Receiver<BgResult>,
+    bg_tx: mpsc::Sender<BgResult>,
+    refreshing: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +135,7 @@ pub enum NewMsgFocus {
 
 impl App {
     pub fn new(modem_index: u32) -> Self {
+        let (bg_tx, bg_rx) = mpsc::channel();
         Self {
             running: true,
             modem_index,
@@ -144,14 +157,20 @@ impl App {
             new_message_dialog: None,
             modem_picker: None,
             last_refresh: Instant::now(),
+            bg_rx,
+            bg_tx,
+            refreshing: false,
         }
     }
 
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<()> {
-        self.refresh_messages();
+        self.trigger_bg_refresh();
 
         while self.running {
             terminal.draw(|frame| ui::draw(frame, self))?;
+
+            // Process any background results (non-blocking)
+            self.process_bg_results();
 
             if event::poll(Duration::from_millis(250))? {
                 if let Event::Key(key) = event::read()? {
@@ -161,6 +180,7 @@ impl App {
 
             // Auto-refresh when no dialog/popup is active
             if self.last_refresh.elapsed() >= AUTO_REFRESH_INTERVAL
+                && !self.refreshing
                 && !self.menu_active
                 && !self.show_help_popup
                 && !self.confirm_delete
@@ -168,73 +188,141 @@ impl App {
                 && self.new_message_dialog.is_none()
                 && self.modem_picker.is_none()
             {
-                self.refresh_messages();
+                self.trigger_bg_refresh();
             }
         }
 
         Ok(())
     }
 
-    pub fn refresh_messages(&mut self) {
+    /// Spawn a background thread to load messages.
+    fn trigger_bg_refresh(&mut self) {
+        if self.refreshing {
+            return;
+        }
+        self.refreshing = true;
         self.last_refresh = Instant::now();
-        match self.load_messages() {
-            Ok(()) => {
-                let count: usize = self.conversations.iter().map(|c| c.messages.len()).sum();
-                self.status_message = format!(
-                    "Modem {} | {} conversations | {} messages",
-                    self.modem_index,
-                    self.conversations.len(),
-                    count,
-                );
-            }
-            Err(e) => {
-                self.status_message = format!("Error: {}", e);
+        let tx = self.bg_tx.clone();
+        let modem_index = self.modem_index;
+        std::thread::spawn(move || {
+            let result = load_messages_bg(modem_index);
+            let _ = tx.send(BgResult::Messages(result));
+        });
+    }
+
+    /// Process all pending background results.
+    fn process_bg_results(&mut self) {
+        while let Ok(result) = self.bg_rx.try_recv() {
+            match result {
+                BgResult::Messages(Ok(messages)) => {
+                    self.refreshing = false;
+                    self.apply_messages(messages);
+                    let count: usize = self.conversations.iter().map(|c| c.messages.len()).sum();
+                    self.status_message = format!(
+                        "Modem {} | {} conversations | {} messages",
+                        self.modem_index,
+                        self.conversations.len(),
+                        count,
+                    );
+                }
+                BgResult::Messages(Err(e)) => {
+                    self.refreshing = false;
+                    self.status_message = format!("Error: {}", e);
+                }
+                BgResult::SendOk(msg) => {
+                    self.status_message = msg;
+                    self.trigger_bg_refresh();
+                }
+                BgResult::SendErr(msg) => {
+                    self.status_message = msg;
+                }
+                BgResult::DeleteConvo { number, errors } => {
+                    if errors == 0 {
+                        self.status_message =
+                            format!("Deleted conversation with {}", number);
+                    } else {
+                        self.status_message = format!(
+                            "Deleted conversation with {} ({} errors)",
+                            number, errors
+                        );
+                    }
+                    self.trigger_bg_refresh();
+                }
+                BgResult::DeleteMsg { index, result } => {
+                    match result {
+                        Ok(()) => {
+                            self.status_message = format!("Deleted message {}", index);
+                        }
+                        Err(e) => {
+                            self.status_message = format!("Failed to delete message: {}", e);
+                        }
+                    }
+                    self.trigger_bg_refresh();
+                    // Clamp selected_message after refresh arrives
+                }
             }
         }
     }
 
-    fn load_messages(&mut self) -> Result<()> {
-        let sms_entries = mmcli::list_sms(self.modem_index)?;
+    /// Apply loaded messages to the app state.
+    fn apply_messages(&mut self, messages: Vec<SmsMessage>) {
+        // Group messages by phone number.
+        // Numbers like "+8610086" and "10086" should be in the same conversation
+        // (country code prefix difference).
+        let mut groups: Vec<(Vec<String>, Vec<SmsMessage>)> = Vec::new();
 
-        let mut messages = Vec::new();
-        for (index, _state) in &sms_entries {
-            match mmcli::get_sms(*index) {
-                Ok(msg) => messages.push(msg),
-                Err(e) => {
-                    log::warn!("Failed to load SMS {}: {}", index, e);
+        for msg in messages {
+            let raw = msg.number.trim().to_string();
+            let mut found = false;
+            for (numbers, msgs) in &mut groups {
+                if numbers.iter().any(|n| numbers_match_raw(n, &raw)) {
+                    if !numbers.contains(&raw) {
+                        numbers.push(raw.clone());
+                    }
+                    msgs.push(msg.clone());
+                    found = true;
+                    break;
                 }
+            }
+            if !found {
+                groups.push((vec![raw], vec![msg]));
             }
         }
 
-        // Group by phone number into conversations
-        let mut by_number: BTreeMap<String, Vec<SmsMessage>> = BTreeMap::new();
-        for msg in messages {
-            by_number.entry(msg.number.clone()).or_default().push(msg);
-        }
-
-        // Sort messages within each conversation by timestamp
-        self.conversations = by_number
+        self.conversations = groups
             .into_iter()
-            .map(|(number, mut msgs)| {
+            .map(|(numbers, mut msgs)| {
                 msgs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+                // Prefer the number with '+' (international format) for display
+                let display_number = numbers
+                    .iter()
+                    .find(|n| n.starts_with('+'))
+                    .or_else(|| numbers.iter().max_by_key(|n| n.len()))
+                    .cloned()
+                    .unwrap_or_default();
                 Conversation {
-                    number,
+                    number: display_number,
                     messages: msgs,
                 }
             })
             .collect();
 
-        // Sort conversations by last message timestamp (most recent first)
         self.conversations
             .sort_by(|a, b| b.last_timestamp().cmp(a.last_timestamp()));
 
-        // Clamp selection
         if !self.conversations.is_empty() && self.selected_conversation >= self.conversations.len()
         {
             self.selected_conversation = self.conversations.len() - 1;
         }
 
-        Ok(())
+        let msg_count = self.selected_convo().map(|c| c.messages.len()).unwrap_or(0);
+        if msg_count > 0 && self.selected_message >= msg_count {
+            self.selected_message = msg_count - 1;
+        }
+    }
+
+    pub fn refresh_messages(&mut self) {
+        self.trigger_bg_refresh();
     }
 
     pub fn selected_convo(&self) -> Option<&Conversation> {
@@ -409,22 +497,42 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected_conversation > 0 {
                     self.selected_conversation -= 1;
-                    self.scroll_offset = 0;
-                    self.selected_message = 0;
+                    self.scroll_offset = u16::MAX;
+                    self.selected_message = self.conversations[self.selected_conversation]
+                        .messages.len().saturating_sub(1);
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if self.selected_conversation + 1 < self.conversations.len() {
                     self.selected_conversation += 1;
-                    self.scroll_offset = 0;
-                    self.selected_message = 0;
+                    self.scroll_offset = u16::MAX;
+                    self.selected_message = self.conversations[self.selected_conversation]
+                        .messages.len().saturating_sub(1);
                 }
             }
             KeyCode::Enter => {
                 if !self.conversations.is_empty() {
                     self.focus = Focus::MessageView;
-                    self.scroll_offset = 0;
-                    self.selected_message = 0;
+                    self.scroll_offset = u16::MAX;
+                    self.selected_message = self.conversations[self.selected_conversation]
+                        .messages.len().saturating_sub(1);
+                }
+            }
+            KeyCode::PageUp => {
+                let page = 10;
+                self.selected_conversation = self.selected_conversation.saturating_sub(page);
+                self.scroll_offset = u16::MAX;
+                self.selected_message = self.conversations[self.selected_conversation]
+                    .messages.len().saturating_sub(1);
+            }
+            KeyCode::PageDown => {
+                if !self.conversations.is_empty() {
+                    let page = 10;
+                    self.selected_conversation = (self.selected_conversation + page)
+                        .min(self.conversations.len() - 1);
+                    self.scroll_offset = u16::MAX;
+                    self.selected_message = self.conversations[self.selected_conversation]
+                        .messages.len().saturating_sub(1);
                 }
             }
             _ => {}
@@ -450,12 +558,14 @@ impl App {
                 }
             }
             KeyCode::PageUp => {
-                let page = self.message_area_height.saturating_sub(2);
-                self.scroll_offset = self.scroll_offset.saturating_sub(page);
+                let page = 5;
+                self.selected_message = self.selected_message.saturating_sub(page);
             }
             KeyCode::PageDown => {
-                let page = self.message_area_height.saturating_sub(2);
-                self.scroll_offset = self.scroll_offset.saturating_add(page);
+                if msg_count > 0 {
+                    let page = 5;
+                    self.selected_message = (self.selected_message + page).min(msg_count - 1);
+                }
             }
             KeyCode::Home => {
                 self.selected_message = 0;
@@ -476,61 +586,8 @@ impl App {
         match key.code {
             KeyCode::Esc => self.focus = Focus::MessageView,
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => self.send_reply(),
-            KeyCode::Enter => {
-                self.input_buffer.insert(self.input_cursor, '\n');
-                self.input_cursor += 1;
-            }
-            KeyCode::Char(c) => {
-                self.input_buffer.insert(self.input_cursor, c);
-                self.input_cursor += c.len_utf8();
-            }
-            KeyCode::Backspace => {
-                if self.input_cursor > 0 {
-                    let prev = self.input_buffer[..self.input_cursor]
-                        .chars()
-                        .last()
-                        .map(|c| c.len_utf8())
-                        .unwrap_or(0);
-                    self.input_cursor -= prev;
-                    self.input_buffer.remove(self.input_cursor);
-                }
-            }
-            KeyCode::Delete => {
-                if self.input_cursor < self.input_buffer.len() {
-                    self.input_buffer.remove(self.input_cursor);
-                }
-            }
-            KeyCode::Left => {
-                if self.input_cursor > 0 {
-                    let prev = self.input_buffer[..self.input_cursor]
-                        .chars()
-                        .last()
-                        .map(|c| c.len_utf8())
-                        .unwrap_or(0);
-                    self.input_cursor -= prev;
-                }
-            }
-            KeyCode::Right => {
-                if self.input_cursor < self.input_buffer.len() {
-                    let next = self.input_buffer[self.input_cursor..]
-                        .chars()
-                        .next()
-                        .map(|c| c.len_utf8())
-                        .unwrap_or(0);
-                    self.input_cursor += next;
-                }
-            }
-            KeyCode::Up => {
-                self.input_cursor =
-                    move_cursor_vertically(&self.input_buffer, self.input_cursor, -1);
-            }
-            KeyCode::Down => {
-                self.input_cursor =
-                    move_cursor_vertically(&self.input_buffer, self.input_cursor, 1);
-            }
-            KeyCode::Home => self.input_cursor = 0,
-            KeyCode::End => self.input_cursor = self.input_buffer.len(),
-            _ => {}
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => self.send_reply(),
+            _ => handle_text_input(&mut self.input_buffer, &mut self.input_cursor, key, true),
         }
     }
 
@@ -545,17 +602,19 @@ impl App {
             None => return,
         };
 
-        match mmcli::create_and_send_sms(self.modem_index, &number, &text) {
-            Ok(()) => {
-                self.input_buffer.clear();
-                self.input_cursor = 0;
-                self.status_message = "Message sent!".to_string();
-                self.refresh_messages();
-            }
-            Err(e) => {
-                self.status_message = format!("Send failed: {}", e);
-            }
-        }
+        self.input_buffer.clear();
+        self.input_cursor = 0;
+        self.status_message = "Sending...".to_string();
+
+        let tx = self.bg_tx.clone();
+        let modem_index = self.modem_index;
+        std::thread::spawn(move || {
+            let result = match mmcli::create_and_send_sms(modem_index, &number, &text) {
+                Ok(()) => BgResult::SendOk("Message sent!".to_string()),
+                Err(e) => BgResult::SendErr(format!("Send failed: {}", e)),
+            };
+            let _ = tx.send(result);
+        });
     }
 
     fn do_delete_conversation(&mut self) {
@@ -564,23 +623,22 @@ impl App {
             None => return,
         };
 
-        let mut errors = 0;
-        for msg in &convo.messages {
-            if let Err(e) = mmcli::delete_sms(self.modem_index, msg.index) {
-                log::error!("Failed to delete SMS {}: {}", msg.index, e);
-                errors += 1;
+        self.status_message = "Deleting...".to_string();
+        let tx = self.bg_tx.clone();
+        let modem_index = self.modem_index;
+        std::thread::spawn(move || {
+            let mut errors = 0;
+            for msg in &convo.messages {
+                if let Err(e) = mmcli::delete_sms(modem_index, msg.index) {
+                    log::error!("Failed to delete SMS {}: {}", msg.index, e);
+                    errors += 1;
+                }
             }
-        }
-
-        if errors == 0 {
-            self.status_message = format!("Deleted conversation with {}", convo.number);
-        } else {
-            self.status_message = format!(
-                "Deleted conversation with {} ({} errors)",
-                convo.number, errors
-            );
-        }
-        self.refresh_messages();
+            let _ = tx.send(BgResult::DeleteConvo {
+                number: convo.number,
+                errors,
+            });
+        });
     }
 
     fn do_delete_message(&mut self) {
@@ -592,22 +650,17 @@ impl App {
             None => return,
         };
 
-        match mmcli::delete_sms(self.modem_index, msg.index) {
-            Ok(()) => {
-                self.status_message = format!("Deleted message {}", msg.index);
-            }
-            Err(e) => {
-                self.status_message = format!("Failed to delete message: {}", e);
-            }
-        }
-
-        self.refresh_messages();
-
-        // Clamp selected_message after refresh
-        let msg_count = self.selected_convo().map(|c| c.messages.len()).unwrap_or(0);
-        if msg_count > 0 && self.selected_message >= msg_count {
-            self.selected_message = msg_count - 1;
-        }
+        self.status_message = "Deleting...".to_string();
+        let tx = self.bg_tx.clone();
+        let modem_index = self.modem_index;
+        let msg_index = msg.index;
+        std::thread::spawn(move || {
+            let result = mmcli::delete_sms(modem_index, msg_index);
+            let _ = tx.send(BgResult::DeleteMsg {
+                index: msg_index,
+                result,
+            });
+        });
     }
 
     fn open_new_message(&mut self) {
@@ -639,6 +692,10 @@ impl App {
                 return;
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.send_new_message();
+                return;
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.send_new_message();
                 return;
             }
@@ -674,19 +731,26 @@ impl App {
             return;
         }
 
-        match mmcli::create_and_send_sms(self.modem_index, &number, &text) {
-            Ok(()) => {
-                self.status_message = format!("Message sent to {}!", number);
-                self.refresh_messages();
-            }
-            Err(e) => {
-                self.status_message = format!("Send failed: {}", e);
-            }
-        }
+        self.status_message = "Sending...".to_string();
+        let tx = self.bg_tx.clone();
+        let modem_index = self.modem_index;
+        std::thread::spawn(move || {
+            let result = match mmcli::create_and_send_sms(modem_index, &number, &text) {
+                Ok(()) => BgResult::SendOk(format!("Message sent to {}!", number)),
+                Err(e) => BgResult::SendErr(format!("Send failed: {}", e)),
+            };
+            let _ = tx.send(result);
+        });
     }
 
     fn open_modem_picker(&mut self) {
-        let modem_indices = mmcli::list_modems().unwrap_or_default();
+        let modem_indices = match mmcli::list_modems() {
+            Ok(indices) => indices,
+            Err(e) => {
+                self.status_message = format!("Failed to list modems: {}", e);
+                return;
+            }
+        };
         if modem_indices.is_empty() {
             self.status_message = "No modems found".to_string();
             return;
@@ -799,6 +863,16 @@ fn handle_text_input(buf: &mut String, cursor: &mut usize, key: KeyEvent, multil
         KeyCode::Down if multiline => {
             *cursor = move_cursor_vertically(buf, *cursor, 1);
         }
+        KeyCode::PageUp if multiline => {
+            for _ in 0..10 {
+                *cursor = move_cursor_vertically(buf, *cursor, -1);
+            }
+        }
+        KeyCode::PageDown if multiline => {
+            for _ in 0..10 {
+                *cursor = move_cursor_vertically(buf, *cursor, 1);
+            }
+        }
         KeyCode::Home => *cursor = 0,
         KeyCode::End => *cursor = buf.len(),
         _ => {}
@@ -858,4 +932,56 @@ fn byte_offset_at_char(text: &str, start_byte: usize, char_count: usize) -> usiz
                 .map(|i| start_byte + i)
                 .unwrap_or(text.len())
         })
+}
+
+/// Load messages from mmcli in a background thread (no &self needed).
+fn load_messages_bg(modem_index: u32) -> Result<Vec<SmsMessage>> {
+    let sms_entries = mmcli::list_sms(modem_index)?;
+    let mut messages = Vec::new();
+    for (index, _state) in &sms_entries {
+        match mmcli::get_sms(*index) {
+            Ok(msg) => messages.push(msg),
+            Err(e) => {
+                log::warn!("Failed to load SMS {}: {}", index, e);
+            }
+        }
+    }
+    Ok(messages)
+}
+
+/// Extract only digits from a phone number.
+fn digits_only(number: &str) -> String {
+    number.chars().filter(|c| c.is_ascii_digit()).collect()
+}
+
+/// Check if two raw phone numbers refer to the same contact.
+/// Handles the case where one has a country code prefix (e.g. "+8610086" vs "10086").
+/// Country codes are 1-3 digits, so we only try stripping those lengths.
+fn numbers_match_raw(a: &str, b: &str) -> bool {
+    let da = digits_only(a);
+    let db = digits_only(b);
+
+    if da == db {
+        return true;
+    }
+
+    // Only attempt country code stripping if one number had a '+' prefix
+    let a_intl = a.trim().starts_with('+');
+    let b_intl = b.trim().starts_with('+');
+
+    if a_intl == b_intl {
+        // Both international or both local — must match exactly
+        return false;
+    }
+
+    let (intl_digits, local_digits) = if a_intl { (&da, &db) } else { (&db, &da) };
+
+    // Try stripping 1, 2, or 3 digit country code from the international number
+    for cc_len in 1..=3 {
+        if intl_digits.len() > cc_len && &intl_digits[cc_len..] == local_digits.as_str() {
+            return true;
+        }
+    }
+
+    false
 }

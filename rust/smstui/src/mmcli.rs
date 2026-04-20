@@ -209,9 +209,13 @@ pub fn get_sms(sms_index: u32) -> Result<SmsMessage> {
 }
 
 pub fn create_and_send_sms(modem_index: u32, number: &str, text: &str) -> Result<()> {
+    if !has_sudo() {
+        bail!("sudo privileges required to send SMS. Run 'sudo -v' first or configure NOPASSWD for mmcli.");
+    }
+
     let create_arg = format!("--messaging-create-sms=number='{}',text='{}'", number, text);
-    let create_output = Command::new("mmcli")
-        .args(["-m", &modem_index.to_string(), &create_arg])
+    let create_output = Command::new("sudo")
+        .args(["-n", "mmcli", "-m", &modem_index.to_string(), &create_arg])
         .output()
         .context("Failed to create SMS")?;
 
@@ -226,14 +230,14 @@ pub fn create_and_send_sms(modem_index: u32, number: &str, text: &str) -> Result
     let sms_index = stdout
         .lines()
         .find_map(|line| {
-            line.rsplit("/org/freedesktop/ModemManager1/SMS/")
-                .next()
+            line.split("/org/freedesktop/ModemManager1/SMS/")
+                .nth(1)
                 .and_then(|idx| idx.trim().parse::<u32>().ok())
         })
         .context("Could not parse SMS index from create output")?;
 
-    let send_output = Command::new("mmcli")
-        .args(["-s", &sms_index.to_string(), "--send"])
+    let send_output = Command::new("sudo")
+        .args(["-n", "mmcli", "-s", &sms_index.to_string(), "--send"])
         .output()
         .context("Failed to send SMS")?;
 
