@@ -1,5 +1,5 @@
 [workspace]
-members = ["doh-proxy", "portainer"]
+members = ["doh-proxy", "portainer", "smstui"]
 
 resolver = "2"
 
