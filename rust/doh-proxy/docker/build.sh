@@ -1,6 +1,10 @@
 #!/bin/bash
 
 # You need to be logged in to Docker Hub before running this script.
+# Usage: build.sh [amd64|arm64]  (defaults to the host architecture)
+# Building a non-host architecture needs QEMU: docker run --privileged --rm tonistiigi/binfmt --install arm64
+
+set -e
 
 # Version configuration - read from Cargo.toml
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -10,11 +14,11 @@ IMAGE_NAME="whiskeyjay/doh-proxy"
 
 echo "Version: $VERSION (minor: $MINOR_VERSION)"
 
-# Auto-detect CPU architecture
-ARCH=$(uname -m)
+# Target CPU architecture: first argument, or auto-detected from the host
+ARCH=${1:-$(uname -m)}
 
 case "$ARCH" in
-    x86_64)
+    x86_64|amd64)
         RUST_TARGET="x86_64-unknown-linux-gnu"
         DOCKER_PLATFORM="linux/amd64"
         DOCKER_ARCH="amd64"
@@ -36,7 +40,17 @@ esac
 WORKSPACE_ROOT="$SCRIPT_DIR/../.."
 cd "$WORKSPACE_ROOT"
 
-cargo build --release --target "$RUST_TARGET"
+if [ "$DOCKER_PLATFORM" = "$(docker version -f '{{.Server.Os}}/{{.Server.Arch}}')" ]; then
+    cargo build --release --target "$RUST_TARGET"
+else
+    echo "Cross-building $RUST_TARGET under QEMU emulation (slow)"
+    docker run --rm --pull always --platform "$DOCKER_PLATFORM" \
+        -u "$(id -u):$(id -g)" \
+        -e CARGO_HOME="/src/target/.cargo-$DOCKER_ARCH" \
+        -v "$PWD":/src -w /src \
+        rust:1-trixie \
+        cargo build --release --target "$RUST_TARGET" -p doh-proxy
+fi
 
 # Temporary directory for build
 BUILD_DIR="$SCRIPT_DIR/.temp"
@@ -57,6 +71,7 @@ cd "$BUILD_DIR"
 
 # Build and push with platform-specific tags
 docker build \
+    --platform "$DOCKER_PLATFORM" \
     -t $IMAGE_NAME:$VERSION-$DOCKER_ARCH \
     -t $IMAGE_NAME:$MINOR_VERSION-$DOCKER_ARCH \
     .
