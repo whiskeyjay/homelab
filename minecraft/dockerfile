@@ -1,4 +1,4 @@
-FROM amazoncorretto:26
+FROM amazoncorretto:27
 
 EXPOSE 25565/tcp
 WORKDIR /minecraft
