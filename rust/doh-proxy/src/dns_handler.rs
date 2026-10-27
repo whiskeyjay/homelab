@@ -1,7 +1,8 @@
 use crate::doh_client::DohClient;
-use hickory_server::authority::MessageResponseBuilder;
-use hickory_server::proto::op::{Header, ResponseCode};
+use hickory_server::net::runtime::Time;
+use hickory_server::proto::op::{Header, HeaderCounts, Metadata, ResponseCode};
 use hickory_server::server::{Request, RequestHandler, ResponseHandler, ResponseInfo};
+use hickory_server::zone_handler::MessageResponseBuilder;
 use std::sync::Arc;
 
 pub struct DnsHandler {
@@ -16,13 +17,13 @@ impl DnsHandler {
 
 #[async_trait::async_trait]
 impl RequestHandler for DnsHandler {
-    async fn handle_request<R: ResponseHandler>(
+    async fn handle_request<R: ResponseHandler, T: Time>(
         &self,
         request: &Request,
         mut response_handle: R,
     ) -> ResponseInfo {
         // Get the first query from the request
-        let query = match request.queries().first() {
+        let query = match request.queries.queries().first() {
             Some(q) => q,
             None => {
                 tracing::error!("Request has no queries");
@@ -38,7 +39,7 @@ impl RequestHandler for DnsHandler {
         tracing::debug!("Received DNS query: {:?}", query);
 
         // Log DNSSEC request status
-        if let Some(edns) = request.edns() {
+        if let Some(edns) = &request.edns {
             tracing::debug!(
                 "EDNS present: DO bit={}, buffer_size={}",
                 edns.flags().dnssec_ok,
@@ -47,15 +48,16 @@ impl RequestHandler for DnsHandler {
         }
 
         // Build a message from the request, preserving important flags
-        let mut query_msg = hickory_proto::op::Message::new();
-        query_msg.set_id(request.id());
-        query_msg.set_message_type(hickory_proto::op::MessageType::Query);
-        query_msg.set_op_code(request.op_code());
-        query_msg.set_recursion_desired(request.recursion_desired());
+        let mut query_msg = hickory_proto::op::Message::new(
+            request.metadata.id,
+            hickory_proto::op::MessageType::Query,
+            request.metadata.op_code,
+        );
+        query_msg.metadata.recursion_desired = request.metadata.recursion_desired;
 
         // Preserve DNSSEC-related flags
-        query_msg.set_checking_disabled(request.checking_disabled());
-        query_msg.set_authentic_data(request.authentic_data());
+        query_msg.metadata.checking_disabled = request.metadata.checking_disabled;
+        query_msg.metadata.authentic_data = request.metadata.authentic_data;
 
         // Create a proper Query from the LowerQuery
         let name = query.name().into();
@@ -63,7 +65,7 @@ impl RequestHandler for DnsHandler {
         query_msg.add_query(hickory_query);
 
         // Preserve EDNS settings (including DNSSEC OK flag)
-        if let Some(edns) = request.edns() {
+        if let Some(edns) = &request.edns {
             let mut edns_builder = hickory_proto::op::Edns::new();
             edns_builder.set_max_payload(edns.max_payload());
             edns_builder.set_version(edns.version());
@@ -86,16 +88,16 @@ impl RequestHandler for DnsHandler {
                 // Log DNSSEC-related information for debugging
                 tracing::debug!(
                     "DoH response: answers={}, authority={}, additional={}, AD={}, CD={}",
-                    doh_response.answer_count(),
-                    doh_response.name_server_count(),
-                    doh_response.additional_count(),
-                    doh_response.authentic_data(),
-                    doh_response.checking_disabled()
+                    doh_response.answers.len(),
+                    doh_response.authorities.len(),
+                    doh_response.additionals.len(),
+                    doh_response.metadata.authentic_data,
+                    doh_response.metadata.checking_disabled
                 );
 
                 // Log DNSSEC records if present
                 if tracing::enabled!(tracing::Level::DEBUG) {
-                    for record in doh_response.answers().iter() {
+                    for record in doh_response.answers.iter() {
                         if matches!(
                             record.record_type(),
                             hickory_proto::rr::RecordType::RRSIG
@@ -110,15 +112,15 @@ impl RequestHandler for DnsHandler {
                             );
                         }
                     }
-                    for record in doh_response.additionals().iter() {
+                    for record in doh_response.additionals.iter() {
                         tracing::debug!("  Additional record: {:?}", record.record_type());
                     }
                 }
 
                 // Forward the complete upstream response preserving all DNSSEC information
-                // Clone the upstream response and update only the ID to match the request
-                let mut response_msg = doh_response.clone();
-                response_msg.set_id(request.id());
+                // Update only the ID to match the request
+                let mut metadata = doh_response.metadata;
+                metadata.id = request.metadata.id;
 
                 // Convert the Message into a MessageResponse that can be sent
                 // We use from_message_request to get the proper response structure,
@@ -127,17 +129,17 @@ impl RequestHandler for DnsHandler {
 
                 // Build response preserving everything from upstream including EDNS/DNSSEC
                 let response = builder.build(
-                    response_msg.header().clone(),
-                    response_msg.answers(),
-                    response_msg.name_servers(),
-                    &[], // SOA: authority/SOA records are already included in name_servers() above
-                    response_msg.additionals(), // This includes EDNS OPT record with DNSSEC data
+                    metadata,
+                    &doh_response.answers,
+                    &doh_response.authorities,
+                    &[], // SOA: authority/SOA records are already included in authorities above
+                    &doh_response.additionals,
                 );
 
                 tracing::debug!(
                     "Sending response with AD={} CD={}",
-                    response_msg.authentic_data(),
-                    response_msg.checking_disabled()
+                    metadata.authentic_data,
+                    metadata.checking_disabled
                 );
 
                 // Send the response back to the client
@@ -169,17 +171,20 @@ impl DnsHandler {
         request: &Request,
         response_code: ResponseCode,
     ) -> ResponseInfo {
-        let mut header = Header::response_from_request(request.header());
-        header.set_response_code(response_code);
-
         let builder = MessageResponseBuilder::from_message_request(request);
-        let response = builder.error_msg(&header, response_code);
+        let response = builder.error_msg(&request.metadata, response_code);
 
         match response_handle.send_response(response).await {
             Ok(info) => info,
             Err(e) => {
                 tracing::error!("Failed to send error response: {}", e);
-                header.into()
+                let mut metadata = Metadata::response_from_request(&request.metadata);
+                metadata.response_code = response_code;
+                Header {
+                    metadata,
+                    counts: HeaderCounts::default(),
+                }
+                .into()
             }
         }
     }

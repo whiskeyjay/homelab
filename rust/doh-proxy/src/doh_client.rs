@@ -70,10 +70,10 @@ impl DohClient {
 
     /// Query a DoH server with the DNS message (with caching)
     pub async fn query(&self, request: &Message) -> Result<Message> {
-        let cache = match (&self.cache, request.queries().first()) {
+        let cache = match (&self.cache, request.queries.first()) {
             (Some(cache), Some(query)) => {
                 let dnssec_ok = request
-                    .extensions()
+                    .edns
                     .as_ref()
                     .map(|edns| edns.flags().dnssec_ok)
                     .unwrap_or(false);
@@ -87,7 +87,7 @@ impl DohClient {
                 if let Some(cached) = cache.get(&cache_key).await {
                     tracing::debug!("Cache HIT for {}", query.name());
                     let mut response = (*cached.message).clone();
-                    response.set_id(request.id());
+                    response.metadata.id = request.metadata.id;
                     return Ok(response);
                 }
 
@@ -100,8 +100,8 @@ impl DohClient {
         let response = self.query_upstream(request).await?;
 
         // Validate response matches the original query
-        if let Some(req_query) = request.queries().first() {
-            let valid = response.queries().first().is_some_and(|resp_query| {
+        if let Some(req_query) = request.queries.first() {
+            let valid = response.queries.first().is_some_and(|resp_query| {
                 resp_query.name() == req_query.name()
                     && resp_query.query_type() == req_query.query_type()
                     && resp_query.query_class() == req_query.query_class()
@@ -114,7 +114,7 @@ impl DohClient {
         }
 
         if let Some((cache, cache_key, query_name)) = cache {
-            let rcode = response.response_code();
+            let rcode = response.metadata.response_code;
             let cacheable = rcode == hickory_proto::op::ResponseCode::NoError
                 || rcode == hickory_proto::op::ResponseCode::NXDomain;
             let ttl = Self::calculate_ttl(&response);
@@ -143,11 +143,11 @@ impl DohClient {
         // (additionals can contain OPT pseudo-records whose TTL field
         // is not a cache duration)
         for record in response
-            .answers()
+            .answers
             .iter()
-            .chain(response.name_servers().iter())
+            .chain(response.authorities.iter())
         {
-            min_ttl = min_ttl.min(record.ttl());
+            min_ttl = min_ttl.min(record.ttl);
         }
 
         // Use a reasonable default if no records or TTL is too high
@@ -258,30 +258,24 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn make_query(name: &str, rtype: RecordType) -> Message {
-        let mut msg = Message::new();
-        msg.set_id(1234);
-        msg.set_message_type(MessageType::Query);
-        msg.set_op_code(OpCode::Query);
-        msg.set_recursion_desired(true);
+        let mut msg = Message::new(1234, MessageType::Query, OpCode::Query);
+        msg.metadata.recursion_desired = true;
         msg.add_query(Query::query(Name::from_str(name).unwrap(), rtype));
         msg
     }
 
     fn make_response(request: &Message, records: Vec<Record>, ttl: u32) -> Message {
-        let mut msg = Message::new();
-        msg.set_id(request.id());
-        msg.set_message_type(MessageType::Response);
-        msg.set_op_code(OpCode::Query);
-        msg.set_recursion_desired(true);
-        msg.set_recursion_available(true);
+        let mut msg = Message::new(request.metadata.id, MessageType::Response, OpCode::Query);
+        msg.metadata.recursion_desired = true;
+        msg.metadata.recursion_available = true;
 
         // Copy query section from request so response validation passes
-        for query in request.queries() {
+        for query in &request.queries {
             msg.add_query(query.clone());
         }
 
         for mut record in records {
-            record.set_ttl(ttl);
+            record.ttl = ttl;
             msg.add_answer(record);
         }
         msg
@@ -295,13 +289,13 @@ mod tests {
 
     #[test]
     fn calculate_ttl_uses_minimum_across_sections() {
-        let mut msg = Message::new();
+        let mut msg = Message::query();
         msg.add_answer(Record::from_rdata(
             Name::from_str("a.example.").unwrap(),
             600,
             RData::A(A(Ipv4Addr::LOCALHOST)),
         ));
-        msg.add_name_server(Record::from_rdata(
+        msg.add_authority(Record::from_rdata(
             Name::from_str("ns.example.").unwrap(),
             120,
             RData::A(A(Ipv4Addr::LOCALHOST)),
@@ -312,7 +306,7 @@ mod tests {
 
     #[test]
     fn calculate_ttl_caps_at_one_hour() {
-        let mut msg = Message::new();
+        let mut msg = Message::query();
         msg.add_answer(Record::from_rdata(
             Name::from_str("a.example.").unwrap(),
             86400, // 24 hours
@@ -324,7 +318,7 @@ mod tests {
 
     #[test]
     fn calculate_ttl_default_when_no_records() {
-        let msg = Message::new();
+        let msg = Message::query();
         assert_eq!(DohClient::calculate_ttl(&msg), 300);
     }
 
@@ -368,8 +362,8 @@ mod tests {
         let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 0).unwrap();
         let result = client.query(&query).await.unwrap();
 
-        assert_eq!(result.answer_count(), 1);
-        assert_eq!(result.answers()[0].record_type(), RecordType::A);
+        assert_eq!(result.answers.len(), 1);
+        assert_eq!(result.answers[0].record_type(), RecordType::A);
     }
 
     #[tokio::test]
@@ -426,7 +420,7 @@ mod tests {
         .unwrap();
 
         let result = client.query(&query).await.unwrap();
-        assert_eq!(result.answer_count(), 1);
+        assert_eq!(result.answers.len(), 1);
     }
 
     #[tokio::test]
@@ -453,14 +447,14 @@ mod tests {
 
         // First query: cache miss, hits upstream
         let r1 = client.query(&query).await.unwrap();
-        assert_eq!(r1.answer_count(), 1);
+        assert_eq!(r1.answers.len(), 1);
 
         // Second query: should be served from cache
         let mut query2 = query.clone();
-        query2.set_id(5678);
+        query2.metadata.id = 5678;
         let r2 = client.query(&query2).await.unwrap();
-        assert_eq!(r2.answer_count(), 1);
-        assert_eq!(r2.id(), 5678); // ID should match the new request
+        assert_eq!(r2.answers.len(), 1);
+        assert_eq!(r2.metadata.id, 5678); // ID should match the new request
     }
 
     #[tokio::test]
@@ -517,11 +511,10 @@ mod tests {
         let query = make_query("fail.example.com.", RecordType::A);
 
         // Build a SERVFAIL response with no records
-        let mut servfail_resp = Message::new();
-        servfail_resp.set_id(query.id());
-        servfail_resp.set_message_type(MessageType::Response);
-        servfail_resp.set_response_code(hickory_proto::op::ResponseCode::ServFail);
-        for q in query.queries() {
+        let mut servfail_resp =
+            Message::new(query.metadata.id, MessageType::Response, OpCode::Query);
+        servfail_resp.metadata.response_code = hickory_proto::op::ResponseCode::ServFail;
+        for q in &query.queries {
             servfail_resp.add_query(q.clone());
         }
 
@@ -538,16 +531,16 @@ mod tests {
         let client = DohClient::new(vec![server.uri() + "/dns-query"], 5, 100).unwrap();
 
         let r1 = client.query(&query).await.unwrap();
-        assert_eq!(r1.response_code(), hickory_proto::op::ResponseCode::ServFail);
+        assert_eq!(r1.metadata.response_code, hickory_proto::op::ResponseCode::ServFail);
 
         // Second identical query should NOT be served from cache
         let r2 = client.query(&query).await.unwrap();
-        assert_eq!(r2.response_code(), hickory_proto::op::ResponseCode::ServFail);
+        assert_eq!(r2.metadata.response_code, hickory_proto::op::ResponseCode::ServFail);
     }
 
     #[test]
     fn calculate_ttl_ignores_additional_section() {
-        let mut msg = Message::new();
+        let mut msg = Message::query();
         msg.add_answer(Record::from_rdata(
             Name::from_str("a.example.").unwrap(),
             300,
@@ -654,9 +647,8 @@ mod tests {
         let query = make_query("example.com.", RecordType::A);
 
         // Build a response for a different domain
-        let mut bad_response = Message::new();
-        bad_response.set_id(query.id());
-        bad_response.set_message_type(MessageType::Response);
+        let mut bad_response =
+            Message::new(query.metadata.id, MessageType::Response, OpCode::Query);
         bad_response.add_query(Query::query(
             Name::from_str("evil.com.").unwrap(),
             RecordType::A,
@@ -688,9 +680,8 @@ mod tests {
         let query = make_query("example.com.", RecordType::A);
 
         // Build a response with the right name but wrong query type
-        let mut bad_response = Message::new();
-        bad_response.set_id(query.id());
-        bad_response.set_message_type(MessageType::Response);
+        let mut bad_response =
+            Message::new(query.metadata.id, MessageType::Response, OpCode::Query);
         bad_response.add_query(Query::query(
             Name::from_str("example.com.").unwrap(),
             RecordType::AAAA,

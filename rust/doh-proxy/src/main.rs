@@ -7,7 +7,7 @@ use clap::Parser;
 use config::Config;
 use dns_handler::DnsHandler;
 use doh_client::DohClient;
-use hickory_server::ServerFuture;
+use hickory_server::Server;
 use std::sync::Arc;
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::{error, info};
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
     let handler = DnsHandler::new(doh_client);
 
     // Create DNS server
-    let mut server = ServerFuture::new(handler);
+    let mut server = Server::new(handler);
 
     // Bind UDP socket
     let udp_socket = match UdpSocket::bind(&listen_addr).await {
@@ -95,7 +95,8 @@ async fn main() -> Result<()> {
         }
     };
     info!("TCP DNS server listening on {}", listen_addr);
-    server.register_listener(tcp_listener, std::time::Duration::from_secs(5));
+    // 32 matches the response buffer size hickory 0.25 used implicitly
+    server.register_listener(tcp_listener, std::time::Duration::from_secs(5), 32);
 
     info!("DoH Proxy is ready to serve DNS queries");
 
